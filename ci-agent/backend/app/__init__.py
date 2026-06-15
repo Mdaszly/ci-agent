@@ -1,0 +1,1 @@
+"""Competitive intelligence backend package."""
