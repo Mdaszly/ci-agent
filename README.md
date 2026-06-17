@@ -1384,18 +1384,25 @@ cd ci-agent
 # 2. 创建功能分支
 git checkout -b feature/your-feature-name
 
-# 3. 安装依赖
-cd ci-agent/backend && pip install -e ".[dev]"
-cd ../frontend && npm install
+# 3. 配置环境变量
+cp ci-agent/backend/.env.example ci-agent/backend/.env
+# 编辑 .env，填入 LLM_API_KEY 等配置
 
-# 4. 开发并测试
-# 后端测试
+# 4. Docker Compose 一键启动开发环境
+cd ci-agent/infra
+docker compose up --build
+# 前端：http://localhost:5173
+# 后端：http://localhost:8000
+# 修改代码后重新构建：docker compose up --build backend
+
+# 5. 运行测试（在容器内或本地虚拟环境）
+# 方式一：进入后端容器执行
+docker compose exec backend python -m pytest -q
+
+# 方式二：本地虚拟环境（需先 pip install -e ".[dev]"）
 cd ci-agent/backend && python -m pytest -q
 
-# 前端类型检查
-cd ci-agent/frontend && npm run build
-
-# 5. 提交代码
+# 6. 提交代码
 git add .
 git commit -m "feat: 简要描述你的改动"
 
