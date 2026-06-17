@@ -16,6 +16,7 @@ dependencies = [
   "lxml>=4.9.0",
   "sqlalchemy>=2.0.0",
   "asyncpg>=0.29.0",
+  "aiosqlite>=0.20.0",
 ]
 
 [project.optional-dependencies]

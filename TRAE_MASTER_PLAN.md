@@ -548,6 +548,7 @@ URL：https://www.resumeworded.com/
 
 | Step | 关键验收 | 状态 |
 |------|----------|------|
+| AP | AnalysisProfile 策略选择器 + 前端表单 + 测试 | ✅ |
 | E1 | ResearchPlan schema + planner 测试 | ❌ |
 | E2 | 并行 research_executor | ❌ |
 | E3 | Coverage → Research 条件回环 | ❌ |

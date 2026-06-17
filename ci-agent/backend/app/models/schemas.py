@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 
 def new_id(prefix: str) -> str:
@@ -32,6 +32,7 @@ class TaskStatus(str, Enum):
     queued = "queued"
     running = "running"
     completed = "completed"
+    cancelled = "cancelled"
     failed = "failed"
 
 
@@ -55,12 +56,150 @@ class InputAsset(BaseModel):
     label: str | None = Field(default=None, max_length=120)
 
 
+class CompetitorUrl(BaseModel):
+    competitor: str = Field(min_length=1, max_length=120)
+    url: HttpUrl
+
+
+class AnalysisStrategy(str, Enum):
+    cost_leadership = "cost_leadership"
+    performance = "performance"
+    hybrid = "hybrid"
+    custom = "custom"
+
+
+STRATEGY_LABELS: dict[AnalysisStrategy, str] = {
+    AnalysisStrategy.cost_leadership: "定价优势",
+    AnalysisStrategy.performance: "产品力优势",
+    AnalysisStrategy.hybrid: "性价比导向",
+    AnalysisStrategy.custom: "自定义权重",
+}
+
+DEFAULT_DIMENSION_WEIGHTS: dict[str, float] = {
+    EvidenceDimension.feature.value: 0.30,
+    EvidenceDimension.pricing.value: 0.25,
+    EvidenceDimension.user_feedback.value: 0.25,
+    EvidenceDimension.positioning.value: 0.10,
+    EvidenceDimension.risk.value: 0.10,
+}
+
+STRATEGY_PRESETS: dict[AnalysisStrategy, dict[str, object]] = {
+    AnalysisStrategy.cost_leadership: {
+        "weights": {
+            EvidenceDimension.feature.value: 0.20,
+            EvidenceDimension.pricing.value: 0.40,
+            EvidenceDimension.user_feedback.value: 0.25,
+            EvidenceDimension.positioning.value: 0.10,
+            EvidenceDimension.risk.value: 0.05,
+        },
+        "mandatory": [
+            EvidenceDimension.pricing,
+            EvidenceDimension.feature,
+            EvidenceDimension.user_feedback,
+        ],
+    },
+    AnalysisStrategy.performance: {
+        "weights": {
+            EvidenceDimension.feature.value: 0.35,
+            EvidenceDimension.pricing.value: 0.15,
+            EvidenceDimension.user_feedback.value: 0.30,
+            EvidenceDimension.positioning.value: 0.10,
+            EvidenceDimension.risk.value: 0.10,
+        },
+        "mandatory": [
+            EvidenceDimension.feature,
+            EvidenceDimension.user_feedback,
+        ],
+    },
+    AnalysisStrategy.hybrid: {
+        "weights": DEFAULT_DIMENSION_WEIGHTS.copy(),
+        "mandatory": [
+            EvidenceDimension.feature,
+            EvidenceDimension.pricing,
+            EvidenceDimension.user_feedback,
+        ],
+    },
+    AnalysisStrategy.custom: {
+        "weights": DEFAULT_DIMENSION_WEIGHTS.copy(),
+        "mandatory": [
+            EvidenceDimension.feature,
+            EvidenceDimension.pricing,
+            EvidenceDimension.user_feedback,
+        ],
+    },
+}
+
+
+class AnalysisProfile(BaseModel):
+    strategy: AnalysisStrategy = AnalysisStrategy.hybrid
+    dimension_weights: dict[str, float] = Field(default_factory=lambda: DEFAULT_DIMENSION_WEIGHTS.copy())
+    focus_attributes: list[str] = Field(default_factory=list, max_length=8)
+    our_product_hints: str | None = Field(default=None, max_length=500)
+
+    @field_validator("focus_attributes")
+    @classmethod
+    def normalize_focus_attributes(cls, attributes: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in attributes:
+            token = item.strip()
+            if token and token not in seen:
+                cleaned.append(token)
+                seen.add(token)
+        return cleaned[:8]
+
+    @model_validator(mode="after")
+    def validate_dimension_weights(self) -> AnalysisProfile:
+        if self.strategy != AnalysisStrategy.custom:
+            return self
+
+        normalized: dict[str, float] = {}
+        for dimension in EvidenceDimension:
+            value = self.dimension_weights.get(dimension.value, 0.0)
+            float_value = float(value)
+            
+            if float_value > 1.0:
+                float_value = float_value / 100.0
+            
+            normalized[dimension.value] = min(1.0, max(0.0, float_value))
+
+        total = sum(normalized.values())
+        if total <= 0:
+            raise ValueError("自定义权重总和必须大于 0")
+        self.dimension_weights = {key: round(value / total, 4) for key, value in normalized.items()}
+        return self
+
+    def resolved_weights(self) -> dict[str, float]:
+        if self.strategy == AnalysisStrategy.custom:
+            return self.dimension_weights.copy()
+        preset = STRATEGY_PRESETS[self.strategy]
+        return dict(preset["weights"])  # type: ignore[arg-type]
+
+    def mandatory_dimensions(self) -> list[EvidenceDimension]:
+        if self.strategy == AnalysisStrategy.custom:
+            weights = self.resolved_weights()
+            ranked = sorted(weights.items(), key=lambda item: item[1], reverse=True)
+            top = [EvidenceDimension(key) for key, weight in ranked[:3] if weight > 0]
+            return top or [
+                EvidenceDimension.feature,
+                EvidenceDimension.pricing,
+                EvidenceDimension.user_feedback,
+            ]
+        preset = STRATEGY_PRESETS[self.strategy]
+        return list(preset["mandatory"])  # type: ignore[arg-type]
+
+    def strategy_label(self) -> str:
+        return STRATEGY_LABELS[self.strategy]
+
+
 class TaskCreateRequest(BaseModel):
     product_goal: str = Field(min_length=8, max_length=800)
     competitors: list[str] = Field(min_length=1, max_length=3)
     urls: list[HttpUrl] = Field(default_factory=list, max_length=5)
+    competitor_urls: list[CompetitorUrl] = Field(default_factory=list, max_length=5)
     comments: str | None = Field(default=None, max_length=10000)
     image_names: list[str] = Field(default_factory=list, max_length=3)
+    analysis_profile: AnalysisProfile = Field(default_factory=AnalysisProfile)
     budget: TaskBudget = Field(default_factory=TaskBudget)
 
     @field_validator("competitors")
@@ -70,6 +209,26 @@ class TaskCreateRequest(BaseModel):
         if not cleaned:
             raise ValueError("至少需要一个竞品名称")
         return cleaned
+
+    def get_url_bindings(self) -> list[tuple[str, str]]:
+        """返回 (竞品名, URL) 绑定列表；优先使用 competitor_urls。"""
+        if self.competitor_urls:
+            return [(item.competitor.strip(), str(item.url)) for item in self.competitor_urls]
+        return [
+            (self.competitors[index % len(self.competitors)], str(url))
+            for index, url in enumerate(self.urls)
+        ]
+
+    def count_sources(self) -> int:
+        return len(self.get_url_bindings()) + (1 if self.comments else 0) + len(self.image_names)
+
+    @model_validator(mode="after")
+    def validate_competitor_url_bindings(self) -> TaskCreateRequest:
+        normalized = {item.strip() for item in self.competitors}
+        for binding in self.competitor_urls:
+            if binding.competitor.strip() not in normalized:
+                raise ValueError(f"URL 绑定的竞品 '{binding.competitor}' 不在竞品列表中")
+        return self
 
 
 class Evidence(BaseModel):
@@ -126,6 +285,51 @@ class DecisionAction(BaseModel):
     priority: Literal["P0", "P1", "P2"]
 
 
+class DecisionPackStatus(str, Enum):
+    draft = "draft"
+    approved = "approved"
+    rejected = "rejected"
+    superseded = "superseded"
+
+
+class DecisionChunkType(str, Enum):
+    decision = "decision"
+    evidence = "evidence"
+    conflict = "conflict"
+    repair = "repair"
+    reviewer_feedback = "reviewer_feedback"
+
+
+class DecisionPackVersion(BaseModel):
+    pack_id: str = Field(default_factory=lambda: new_id("pack"))
+    version: int = Field(ge=1)
+    parent_pack_id: str | None = None
+    superseded_by: str | None = None
+    status: DecisionPackStatus = DecisionPackStatus.draft
+    task_id: str | None = None
+    stage: str | None = None
+    iteration: int = Field(default=0, ge=0)
+    source_refs: list[str] = Field(default_factory=list)
+    risk_level: Literal["low", "medium", "high"] = "medium"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class DecisionMemoryItem(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("mem"))
+    task_id: str
+    pack_id: str
+    version: int = Field(ge=1)
+    chunk_type: DecisionChunkType
+    stage: str | None = None
+    iteration: int = Field(default=0, ge=0)
+    source_refs: list[str] = Field(default_factory=list)
+    summary: str = Field(min_length=1, max_length=1200)
+    embedding_text: str = Field(min_length=1, max_length=8000)
+    payload: dict[str, object] = Field(default_factory=dict)
+    status: DecisionPackStatus = DecisionPackStatus.draft
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class DecisionPack(BaseModel):
     id: str = Field(default_factory=lambda: new_id("decision"))
     positioning: list[DecisionAction]
@@ -134,6 +338,30 @@ class DecisionPack(BaseModel):
     battlecard: list[DecisionAction] = Field(default_factory=list)
     summary: str
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    version_meta: DecisionPackVersion | None = None
+    source_refs: list[str] = Field(default_factory=list)
+    version: int = Field(default=1, ge=1)
+    parent_pack_id: str | None = None
+    superseded_by: str | None = None
+    status: DecisionPackStatus = DecisionPackStatus.draft
+
+
+class ReviewStatus(str, Enum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
+    needs_retry = "needs_retry"
+
+
+class WorkflowMemoryState(BaseModel):
+    current_pack_version: int = Field(default=1, ge=1)
+    max_iterations: int = Field(default=3, ge=1, le=10)
+    current_iteration: int = Field(default=0, ge=0)
+    latest_memory_ids: list[str] = Field(default_factory=list)
+    last_recall_count: int = Field(default=0, ge=0)
+    last_recall_summary: str | None = None
+    last_reviewer_status: ReviewStatus = ReviewStatus.pending
+    retry_reason: str | None = None
 
 
 class ReviewScore(BaseModel):
@@ -184,6 +412,8 @@ class TaskRecord(BaseModel):
     conflicts: list[Conflict] = Field(default_factory=list)
     coverage: CoverageGateResult | None = None
     decision_pack: DecisionPack | None = None
+    decision_history: list[DecisionPackVersion] = Field(default_factory=list)
+    memory_state: WorkflowMemoryState | None = None
     review: ReviewScore | None = None
     budget_usage: BudgetUsage | None = None
     research_plan: ResearchPlan | None = None

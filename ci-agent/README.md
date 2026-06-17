@@ -1,31 +1,81 @@
-# 竞品情报 Agent MVP
+# ci-agent
 
-这是一个证据优先的竞品情报与产品决策 Agent 原型。首版目标是跑通 `URL/文本/单图元数据 -> Evidence -> Coverage Gate -> Decision Pack -> Reviewer` 的最小闭环。
+`ci-agent` 是一个面向竞品情报与产品决策的多 Agent 闭环示例项目。它的目标不是做一个“看起来会回答问题”的聊天界面，而是把一条任务从提交、调研、证据归一、决策包生成、向量记忆写入、召回修订，到 Reviewer 复核与终止的链路完整跑通，并且让每一步都可解释、可观测、可回放。
 
-## 目录
+## 项目定位
 
-- `backend`：FastAPI + Pydantic + LangGraph worker。
-- `frontend`：Vue3 + Vite + Element Plus dashboard。
-- `infra`：Docker Compose，本地包含 backend、frontend、PostgreSQL。
+这个仓库适合展示三件事：
 
-## 本地启动
+- 任务如何被拆成多个 Agent 阶段
+- 决策如何进入记忆，再反向影响下一轮生成
+- Reviewer 如何把高幻觉风险、证据不足和超限重写收口
 
-### 后端
+## 闭环链路
+
+当前主链路可以理解为：
+
+```text
+Task Submit
+  → Planner
+  → Research
+  → Evidence Normalize
+  → Coverage Gate
+  → Conflict Resolver
+  → Decision Pack Writer
+  → Vector Memory Write
+  → Memory Recall
+  → Reviewer
+  → Publish / Retry / Stop
+```
+
+### 这条链路里发生了什么
+
+- **Planner**：把用户目标、竞品、补充说明、预算约束整理成任务上下文
+- **Research**：采集和整理证据，形成可追踪的 evidence 集合
+- **Coverage Gate**：检查关键维度是否覆盖，生成缺口信息
+- **Conflict Resolver**：处理相互冲突或不一致的证据
+- **Decision Pack Writer**：生成结构化决策包
+- **Vector Memory**：把决策包拆成可检索块，写入记忆层
+- **Memory Recall**：根据当前版本、轮次、风险和上下文召回修正块
+- **Reviewer**：给出分数、风险和复写建议
+- **Retry / Stop**：根据上限、评分和终止原因决定继续重写还是收口
+
+## 仓库结构
+
+```text
+ci-agent/
+├── backend/                # FastAPI + workflow + memory
+├── frontend/               # Vue 3 控制台
+├── infra/                  # 本地容器编排
+├── canvases/               # 架构画布
+└── README.md               # 当前文档
+```
+
+### 后端重点
+
+- `backend/app/api/routes.py`：任务提交、任务查询、事件流入口
+- `backend/app/worker/workflow.py`：主工作流、回流、终止、记忆写入与召回
+- `backend/app/services/decision_memory.py`：决策记忆切块、写入、检索、标记 superseded
+- `backend/app/models/schemas.py`：任务、证据、决策包、回流状态等结构定义
+- `backend/tests/`：工作流和分析配置测试
+
+### 前端重点
+
+- `frontend/src/App.vue`：任务输入、状态机展示、Reviewer/回流/终止原因可视化
+- `frontend/src/services/api.ts`：任务创建、任务查询、错误透传、事件订阅
+
+## 启动方式
+
+### 1. 后端
 
 ```bash
 cd ci-agent/backend
-pip install -e ".[dev]"
-
-# 创建 .env 文件并配置环境变量
-
+pip install -e .
 cp .env.example .env
-# 编辑 .env，配置 LLM_API_KEY
-# LLM_API_KEY=your-api-key
-
 uvicorn app.main:app --reload
 ```
 
-### 前端
+### 2. 前端
 
 ```bash
 cd ci-agent/frontend
@@ -33,19 +83,20 @@ npm install
 npm run dev
 ```
 
-### Docker
+### 3. 容器方式
+
+如果你希望一键启动本地依赖，可以查看 `infra/` 下的 compose 配置：
 
 ```bash
 cd ci-agent/infra
 docker compose up --build
 ```
 
-## 环境变量配置
+## 环境变量
 
-在 `backend/.env` 文件中配置以下变量：
+后端主要依赖以下配置：
 
 ```env
-# LLM 配置（必须配置才能生成真实决策包）
 LLM_API_KEY=your-api-key
 LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 LLM_MODEL=qwen-plus
@@ -54,188 +105,114 @@ LLM_MAX_RETRIES=2
 LLM_TEMPERATURE=0.2
 LLM_PROVIDER=dashscope
 
-# 数据库配置（可选，不配置则使用内存存储）
 DB_HOST=localhost
 DB_PORT=5432
 DB_USERNAME=postgres
 DB_PASSWORD=postgres
 DB_DATABASE=ci_agent
 
-# 搜索配置（可选，不配置则跳过自动搜索补证据）
 SEARCH_API_KEY=
 SEARCH_PROVIDER=serpapi
 SEARCH_MAX_RESULTS=5
 ```
 
-## 真实能力 vs Mock 能力
+### 说明
 
+- `LLM_API_KEY` 是生成真实决策包和 Reviewer 复核的关键配置
+- `SEARCH_API_KEY` 用于未提供 URL 时的补证据场景
+- 数据库未配置时，项目会使用降级存储路径，便于本地演示
 
-| 能力            | 状态   | 说明                                 |
-| ------------- | ---- | ---------------------------------- |
-| **LLM 决策包生成** | 真实   | 配置 `LLM_API_KEY` 后调用阿里云百炼          |
-| **LLM 智能复核**  | 真实   | 配置 `LLM_API_KEY` 后调用大模型复核          |
-| **网页抓取**      | 真实   | 使用 `URLAdapter` 真实抓取网页内容           |
-| **评论聚类**      | 真实   | 使用 `CommentAdapter` 将长评论拆成多条用户反馈 Evidence |
-| **冲突裁决**      | 真实   | `ConflictResolver` 会检测价格/抓取状态/有无对立冲突 |
-| **证据评分**      | 真实   | 使用 `EvidenceScorer` 计算可信度/相关性/质量评分 |
-| **规则校验**      | 真实   | Evidence ID 校验、维度匹配校验              |
-| **数据库持久化**    | 条件真实 | PostgreSQL 可用时使用，否则自动降级内存存储        |
-| **搜索补证据**    | 条件真实 | 配置 `SEARCH_API_KEY` 且未提供 URL 时自动搜索补证据 |
-| **图片 OCR**    | Mock | 仅存储文件名，无视觉分析                       |
-| **评论爬取**      | Mock | 仍需手动粘贴评论内容，不做平台自动爬取                |
+## 示例输入
 
-
-## 首版能力
-
-- **输入安全层**：URL 协议校验、私网地址阻断、图片 MIME 和大小限制、任务来源预算。
-- **结构化证据**：`Evidence`、`Claim`、`Conflict`、`CoverageGateResult`、`DecisionPack`、`ReviewScore`。
-- **工作流**：`Planner -> Research -> EvidenceNormalizer -> CoverageGate -> ConflictResolver -> Writer -> Reviewer`。
-- **Research 阶段**：支持 URL 抓取、评论聚类；当未提供 URL 且配置 `SEARCH_API_KEY` 时，可自动搜索补证据。
-- **前端展示**：任务表单、阶段进度、证据覆盖、质量分、冲突结果、决策包和 Reviewer 分数。
-- **LLM 集成**：支持真实大模型调用，输出自动校验 Evidence ID。
-
-## 工作流说明
-
-```
-用户提交任务
-    ↓
-Planner (规划任务)
-    ↓
-Research (网页抓取 / 评论聚类 / 可选搜索补证据)
-    ↓
-EvidenceNormalizer (证据评分)
-    ↓
-CoverageGate (维度覆盖检查 + 质量门)
-    ↓
-ConflictResolver (冲突检测与裁决)
-    ↓
-Writer (生成决策包) → 需要 LLM_API_KEY，否则任务失败
-    ↓
-Reviewer (复核评分)
-    ↓
-任务完成/失败
-```
-
-## 手动测试用例
+这是一个适合验证闭环的最小案例：
 
 ```text
-产品目标：
-为一个 AI 简历优化工具寻找差异化定位和首版 MVP 功能优先级
+产品目标：为一款手持小风扇产品寻找差异化定位和竞争策略，分析市场机会点
 
 竞品：
-ResumeWorded, Kickresume
-
-URL：
-https://www.resumeworded.com/
-https://www.kickresume.com/en/pricing/
+几素高速节能手持小风扇
+铁布衫手持风扇
 
 评论：
-用户常抱怨模板同质化、定价偏高、中文场景支持不足，希望获得更具体的求职反馈。
-
-图片文件名：
-competitor-homepage.png
+几素风扇风力强劲但噪音略大，铁布衫风扇静音效果好但风力稍弱。消费者关注续航时间、便携性、噪音控制和价格。
 ```
 
-**预期结果**：
+## 运行后的可见结果
 
-- 配置 `LLM_API_KEY`：Writer 真实生成决策包，内容基于证据，不编造事实。
-- 未配置 `LLM_API_KEY`：任务失败，前端明确提示需配置 API key。
-- URL 真实抓取：Evidence 包含页面标题/正文/价格片段。
-- 长评论会被拆成多条 `user_feedback` Evidence。
-- 若存在矛盾证据，系统会输出 `conflicts` 裁决结果。
-- Coverage 未达标时：Reviewer 降低评分并提示补证据。
-- 伪造 `evidence_id`：LLM 输出被拒绝，任务失败。
+前端会显示：
 
-## 测试
+- 当前 Agent 阶段
+- 当前版本号
+- 回流轮次
+- 最近一次 Reviewer 结论
+- 最近一次召回条目数
+- 当前终止原因
+- 任务事件流
 
-### 默认离线测试
+后端会记录：
+
+- task events
+- decision history
+- memory items
+- review history
+- memory_state
+
+## 验证方式
+
+### 后端测试
 
 ```bash
 cd ci-agent/backend
 python -m pytest -q
 ```
 
-默认会跳过 `integration` 标记的外网/真实 LLM 测试。
-
-### 集成测试
+如果你要跑集成测试：
 
 ```bash
 cd ci-agent/backend
 python -m pytest -q -m integration
 ```
 
-适用于已经配置 `LLM_API_KEY`，并且当前环境可访问外网的场景。
+### 手工验收
 
-## Docker 5 分钟体验
-
-```bash
-cd ci-agent/backend
-cp .env.example .env
-```
-
-编辑 `.env`：
-
-- 必填：`LLM_API_KEY`
-- 可选：`SEARCH_API_KEY`
-
-然后执行：
-
-```bash
-cd ../infra
-docker compose up --build
-```
-
-启动后：
-
-1. 打开前端页面
-2. 点击“加载 Demo 用例”
-3. 点击“运行分析”
-4. 查看 Evidence、Coverage、Conflict、Decision Pack 和 Reviewer Score
+1. 启动后端和前端
+2. 提交一个包含竞品和目标的任务
+3. 观察状态机是否从 Planner 进入 Research、Writer、Reviewer
+4. 观察 `memory_state` 是否出现版本号、轮次、召回数和终止原因
+5. 观察 Reviewer 低分时是否触发受控重写，而不是无限循环
+6. 观察失败时是否能看到明确原因，而不是泛化错误
 
 ## 当前限制
 
-- **图片分析**：仅存储文件名元数据，无 OCR/视觉模型。
-- **搜索能力**：仅在未提供 URL 且配置 `SEARCH_API_KEY` 时自动补证据，不做复杂搜索编排。
-- **评论来源**：需用户手动粘贴评论，无平台自动爬取。
-- **视频解析**：不在首版范围。
-- **多租户**：不在首版范围。
+这个项目是开源展示型闭环，不是完整生产系统，当前限制如下：
 
-## 代码结构
+- **图片能力**：只保留元数据或轻量处理，不等同于完整视觉理解
+- **评论采集**：不做平台级自动爬取，更多依赖用户输入或接入现有源
+- **多租户**：未做完整租户隔离
+- **视频分析**：不在当前范围
+- **人工干预控制台**：目前仍以任务状态展示为主，尚不是完整操作台
+- **真实效果依赖外部模型**：没有可用的 LLM 配置时，闭环能力会受限
 
-``` 
-backend/
-├── app/
-│   ├── core/config.py      # 配置管理
-│   ├── services/
-│   │   ├── llm.py          # LLM 客户端
-│   │   ├── url_adapter.py  # 网页抓取
-│   │   ├── comment_adapter.py  # 评论聚类
-│   │   ├── search_adapter.py   # 搜索补证据
-│   │   ├── evidence_scorer.py  # 证据评分
-│   │   └── store.py        # 数据存储
-│   ├── worker/workflow.py  # 工作流定义
-│   ├── db/models.py        # 数据库模型
-│   ├── models/schemas.py   # Pydantic 模型
-│   └── main.py             # FastAPI 入口
-└── tests/
-    ├── test_api.py         # API 测试
-    ├── test_security.py    # 安全测试
-    ├── test_llm.py         # LLM 测试
-    ├── test_writer_validation.py  # Writer 校验测试
-    ├── test_url_adapter.py  # URL 适配器测试
-    ├── test_comment_adapter.py  # 评论聚类测试
-    ├── test_conflict_resolver.py  # 冲突裁决测试
-    ├── test_search_adapter.py  # 搜索适配器测试
-    └── test_workflow.py  # 工作流测试
-```
+## 代码口径
 
-## 验收标准
+如果你在看源码，建议按这条顺序读：
 
-1. ✅ 配置 `LLM_API_KEY` 后真实调用大模型
-2. ✅ 未配置 `LLM_API_KEY` 时任务失败，明确提示用户
-3. ✅ LLM 输出必须校验 `evidence_ids` 是否存在
-4. ✅ LLM 输出必须通过 Pydantic 校验
-5. ✅ Reviewer 识别 Coverage 未达标
-6. ✅ 日志/响应不泄露 API key
-7. ✅ pytest 测试通过
+1. `frontend/src/App.vue`
+2. `backend/app/api/routes.py`
+3. `backend/app/worker/workflow.py`
+4. `backend/app/services/decision_memory.py`
+5. `backend/app/models/schemas.py`
+6. `backend/tests/test_workflow.py`
 
+## 设计目标
+
+这个项目现在追求的是：
+
+- 输入和输出都结构化
+- 任务状态能解释
+- 决策包能回流
+- 记忆能召回
+- Reviewer 能收口
+- 失败原因能说清楚
+
+如果你是第一次接触这个仓库，先把它当作一个“多 Agent 闭环状态机 + 决策记忆系统”的展示项目来看，会比把它当作普通问答应用更准确。

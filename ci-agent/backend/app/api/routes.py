@@ -12,7 +12,6 @@ from typing import Annotated
 
 from app.core.security import (
     estimate_budget_usage,
-    estimate_source_count,
     validate_image_name,
     validate_image_upload,
     validate_file_upload,
@@ -25,6 +24,7 @@ from app.models.schemas import (
     TaskStatus,
 )
 from app.services.store import task_store
+from app.services.decision_memory import get_task_memory_items
 from app.worker.workflow import run_competitive_intelligence_workflow, rerun_from_stage, VALID_RERUN_STAGES
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,30 @@ router = APIRouter(prefix="/api")
 
 # 环境变量控制默认同步模式（测试环境默认同步）
 SYNC_MODE_DEFAULT = os.getenv("TASK_SYNC_MODE", "false").lower() == "true"
+LOOSE_VALIDATION_DEFAULT = os.getenv("TASK_LOOSE_VALIDATION", "false").lower() == "true"
+
+# region agent log
+DEBUG_LOG_PATH = r"F:\ComfyUI\.cursor\debug-43496882-51bc-41f7-948d-6fd94772f027.log"
+DEBUG_SESSION_ID = "43496882-51bc-41f7-948d-6fd94772f027"
+
+
+def _agent_log(location: str, message: str, data: dict, hypothesis_id: str, run_id: str = "run1") -> None:
+    payload = {
+        "sessionId": DEBUG_SESSION_ID,
+        "id": f"log_{int(time.time() * 1000)}_{os.getpid()}",
+        "timestamp": int(time.time() * 1000),
+        "location": location,
+        "message": message,
+        "data": data,
+        "runId": run_id,
+        "hypothesisId": hypothesis_id,
+    }
+    try:
+        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+# endregion
 
 
 def _get_task_or_404(task_id: str) -> TaskRecord:
@@ -40,7 +64,7 @@ def _get_task_or_404(task_id: str) -> TaskRecord:
     task = task_store.get(task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
-    return task
+    return task 
 
 
 def _run_workflow_in_thread(task_id: str) -> None:
@@ -76,34 +100,121 @@ def _run_workflow_in_thread(task_id: str) -> None:
 def create_task(
     payload: TaskCreateRequest,
     x_sync_mode: Annotated[str | None, Header(alias="X-Sync-Mode")] = None,
+    x_loose_validation: Annotated[str | None, Header(alias="X-Loose-Validation")] = None,
 ) -> TaskRecord:
-    for url in payload.urls:
-        validate_public_url(str(url))
-
-    source_count = estimate_source_count(
-        url_count=len(payload.urls),
-        has_comments=payload.comments is not None,
-        image_count=len(payload.image_names),
+    development_mode = os.getenv("ENVIRONMENT", "development").lower() == "development"
+    sync_mode = (x_sync_mode and x_sync_mode.lower() == "true") or SYNC_MODE_DEFAULT
+    loose_validation = (
+        (x_loose_validation and x_loose_validation.lower() == "true")
+        or LOOSE_VALIDATION_DEFAULT
+        or SYNC_MODE_DEFAULT
     )
-    if source_count > payload.budget.max_sources:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="输入来源数量超过任务预算",
+    _agent_log(
+        "routes.py:create_task:entry",
+        "received create_task request",
+        {
+            "sync_header": x_sync_mode,
+            "loose_header": x_loose_validation,
+            "development_mode": development_mode,
+            "sync_mode": bool(sync_mode),
+            "loose_validation": bool(loose_validation),
+            "urls": len(payload.urls),
+            "competitor_urls": len(payload.competitor_urls),
+            "image_names": len(payload.image_names),
+            "competitors": len(payload.competitors),
+            "budget": payload.budget.model_dump(),
+        },
+        "H1",
+    )
+    if not loose_validation:
+        _agent_log(
+            "routes.py:create_task:strict-path",
+            "entering strict validation path",
+            {
+                "urls": [str(url) for url in payload.urls],
+                "competitor_urls": [str(binding.url) for binding in payload.competitor_urls],
+                "image_names": list(payload.image_names),
+                "budget": payload.budget.model_dump(),
+            },
+            "H1",
         )
-    estimated_tokens, estimated_cost = estimate_budget_usage(source_count)
-    if estimated_tokens > payload.budget.max_tokens or estimated_cost > payload.budget.max_cost_usd:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="预估 token 或成本超过任务预算",
+        for url in payload.urls:
+            try:
+                validate_public_url(str(url))
+            except HTTPException as exc:
+                _agent_log(
+                    "routes.py:create_task:url-validation-failed",
+                    "url validation rejected request",
+                    {"url": str(url), "detail": exc.detail},
+                    "H1",
+                )
+                raise
+        for binding in payload.competitor_urls:
+            try:
+                validate_public_url(str(binding.url))
+            except HTTPException as exc:
+                _agent_log(
+                    "routes.py:create_task:competitor-url-validation-failed",
+                    "competitor url validation rejected request",
+                    {"competitor": binding.competitor, "url": str(binding.url), "detail": exc.detail},
+                    "H1",
+                )
+                raise
+
+        source_count = payload.count_sources()
+        if source_count > payload.budget.max_sources:
+            _agent_log(
+                "routes.py:create_task:budget-source-count-exceeded",
+                "source count exceeded budget",
+                {"source_count": source_count, "max_sources": payload.budget.max_sources},
+                "H2",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="输入来源数量超过任务预算",
+            )
+        estimated_tokens, estimated_cost = estimate_budget_usage(source_count)
+        if estimated_tokens > payload.budget.max_tokens or estimated_cost > payload.budget.max_cost_usd:
+            _agent_log(
+                "routes.py:create_task:budget-estimate-exceeded",
+                "estimated usage exceeded budget",
+                {
+                    "source_count": source_count,
+                    "estimated_tokens": estimated_tokens,
+                    "estimated_cost": estimated_cost,
+                    "max_tokens": payload.budget.max_tokens,
+                    "max_cost_usd": payload.budget.max_cost_usd,
+                },
+                "H2",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="预估 token 或成本超过任务预算",
+            )
+        for image_name in payload.image_names:
+            try:
+                validate_image_name(image_name)
+            except HTTPException as exc:
+                _agent_log(
+                    "routes.py:create_task:image-name-validation-failed",
+                    "image name validation rejected request",
+                    {"image_name": image_name, "detail": exc.detail},
+                    "H3",
+                )
+                raise
+
+        logger.info(
+            "Task create strict validation completed",
+            extra={"sync_mode": sync_mode, "development_mode": development_mode},
         )
-    for image_name in payload.image_names:
-        validate_image_name(image_name)
 
     task = task_store.create(TaskRecord(request=payload))
-    task_store.append_event(task, "created", "任务已创建", TaskStatus.queued)
-
-    # 判断是否使用同步模式：Header 优先，其次环境变量
-    sync_mode = (x_sync_mode and x_sync_mode.lower() == "true") or SYNC_MODE_DEFAULT
+    _agent_log(
+        "routes.py:create_task:task-created",
+        "task record created",
+        {"task_id": task.id, "status": task.status.value},
+        "H4",
+    )
 
     if sync_mode:
         # 同步模式：直接执行 workflow（用于测试）
@@ -125,6 +236,22 @@ def create_task(
         )
         thread.start()
         return queued_task
+
+
+@router.post("/tasks/{task_id}/cancel")
+def cancel_task(task_id: str) -> dict:
+    task = task_store.cancel(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
+    return {"status": task.status.value, "task": task}
+
+
+@router.post("/tasks/{task_id}/cancel")
+def cancel_task(task_id: str) -> dict:
+    task = task_store.cancel(task_id)
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
+    return {"status": task.status.value, "task": task}
 
 
 @router.post("/uploads/images")
@@ -201,6 +328,29 @@ def get_task(task_id: str) -> TaskRecord:
     return _get_task_or_404(task_id)
 
 
+@router.get("/tasks/{task_id}/history")
+def get_task_history(task_id: str) -> dict:
+    task = _get_task_or_404(task_id)
+    return {
+        "task_id": task.id,
+        "decision_history": task.decision_history,
+        "memory_state": task.memory_state,
+        "review": task.review,
+        "events": task.events,
+    }
+
+
+@router.get("/tasks/{task_id}/memory")
+def get_task_memory(task_id: str) -> dict:
+    task = _get_task_or_404(task_id)
+    return {
+        "task_id": task.id,
+        "memory_state": task.memory_state,
+        "decision_history": task.decision_history,
+        "memory_items": [item.model_dump(mode="json") for item in get_task_memory_items(task.id)],
+    }
+
+
 @router.get("/tasks/{task_id}/events/stream")
 def stream_task_events(task_id: str) -> StreamingResponse:
     """SSE endpoint：实时推送任务事件"""
@@ -209,24 +359,20 @@ def stream_task_events(task_id: str) -> StreamingResponse:
     def event_stream():
         sent_count = 0
         while True:
-            # 重新获取任务以获取最新状态
             current_task = task_store.get(task_id)
             if current_task is None:
                 break
 
-            # 推送新事件
             events = current_task.events
             while sent_count < len(events):
                 event = events[sent_count]
                 yield f"data: {event.model_dump_json()}\n\n"
                 sent_count += 1
 
-            # 检查任务是否已完成或失败
             if current_task.status in (TaskStatus.completed, TaskStatus.failed):
                 yield "data: [DONE]\n\n"
                 break
 
-            # 等待 0.5 秒后再次检查
             time.sleep(0.5)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

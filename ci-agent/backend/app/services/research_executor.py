@@ -1,7 +1,9 @@
 """研究任务执行器 - 按 source_type 分发到对应 Adapter"""
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from typing import List
 
 from app.models.schemas import Evidence, EvidenceDimension, ResearchTask, SourceType
@@ -9,80 +11,111 @@ from app.services.url_adapter import url_adapter, URLAdapterError
 
 logger = logging.getLogger(__name__)
 
+FEATURE_KEYWORDS = re.compile(
+    r"(风力|风速|噪音|分贝|续航|电池|容量|档位|无刷|便携|重量|充电|静音|"
+    r"wind|speed|noise|battery|portable|rpm|mah|db)",
+    re.IGNORECASE,
+)
+
 
 def execute_task(task: ResearchTask) -> List[Evidence]:
     """
     根据 ResearchTask.source_type 分发到对应 Adapter 执行
-    
+
     Args:
         task: ResearchTask 任务
-        
+
     Returns:
         Evidence 列表
     """
     try:
         if task.source_type == "url":
             return _execute_url_task(task)
-        elif task.source_type == "search":
+        if task.source_type == "search":
             return _execute_search_task(task)
-        elif task.source_type == "comment":
+        if task.source_type == "comment":
             return _execute_comment_task(task)
-        elif task.source_type == "image":
+        if task.source_type == "image":
             return _execute_image_task(task)
-        else:
-            logger.warning(f"未知的 source_type: {task.source_type}")
-            return []
+        logger.warning(f"未知的 source_type: {task.source_type}")
+        return []
     except Exception as e:
         logger.warning(f"执行 ResearchTask 失败 {task.source_type}: {e}")
         return []
 
 
 def _execute_url_task(task: ResearchTask) -> List[Evidence]:
-    """执行 URL 采集任务"""
+    """执行 URL 采集任务，拆分为定位 / 定价 / 特性多条 Evidence"""
     try:
         title, content, price_info = url_adapter.fetch(task.query_or_url)
-        
-        lower_url = task.query_or_url.lower()
-        dimension = (
-            EvidenceDimension.pricing
-            if "price" in lower_url or "pricing" in lower_url
-            else EvidenceDimension.feature
-        )
-        
-        if content:
-            claim_text = f"{task.competitor} 的页面标题为 '{title}'" if title else f"{task.competitor} 页面包含相关信息"
-            if price_info:
-                claim_text += f"，价格信息：{price_info}"
-            
-            return [
+        evidences: List[Evidence] = []
+
+        if title:
+            evidences.append(
                 Evidence(
                     source_type=SourceType.url,
                     source_url=task.query_or_url,
                     competitor=task.competitor,
-                    dimension=dimension,
-                    claim=claim_text,
-                    quote=content[:500] if content else f"来自 URL 输入：{task.query_or_url}",
+                    dimension=EvidenceDimension.positioning,
+                    claim=f"{task.competitor} 产品定位：{title[:80]}",
+                    quote=title[:300],
+                    confidence=0.82,
+                    freshness="recent",
+                    content_hash=_hash_text(title),
+                    license_risk="low",
+                )
+            )
+
+        if price_info:
+            evidences.append(
+                Evidence(
+                    source_type=SourceType.url,
+                    source_url=task.query_or_url,
+                    competitor=task.competitor,
+                    dimension=EvidenceDimension.pricing,
+                    claim=f"{task.competitor} 价格信息",
+                    quote=price_info[:500],
+                    confidence=0.88,
+                    freshness="recent",
+                    content_hash=_hash_text(price_info),
+                    license_risk="low",
+                )
+            )
+
+        if content:
+            feature_quote = _extract_feature_snippet(content)
+            evidences.append(
+                Evidence(
+                    source_type=SourceType.url,
+                    source_url=task.query_or_url,
+                    competitor=task.competitor,
+                    dimension=EvidenceDimension.feature,
+                    claim=f"{task.competitor} 产品特性与参数信息",
+                    quote=feature_quote[:800],
                     confidence=0.85,
                     freshness="recent",
-                    content_hash=_hash_text(content[:200] if content else task.query_or_url),
+                    content_hash=_hash_text(feature_quote[:200]),
                     license_risk="low",
                 )
-            ]
-        else:
-            return [
-                Evidence(
-                    source_type=SourceType.url,
-                    source_url=task.query_or_url,
-                    competitor=task.competitor,
-                    dimension=dimension,
-                    claim=f"{task.competitor} 在公开页面展示了与 {dimension.value} 相关的信息",
-                    quote=f"来自 URL 输入：{task.query_or_url}",
-                    confidence=0.72,
-                    freshness="unknown",
-                    content_hash=_hash_text(task.query_or_url),
-                    license_risk="low",
-                )
-            ]
+            )
+
+        if evidences:
+            return evidences
+
+        return [
+            Evidence(
+                source_type=SourceType.url,
+                source_url=task.query_or_url,
+                competitor=task.competitor,
+                dimension=EvidenceDimension.feature,
+                claim=f"{task.competitor} 在公开页面展示了相关信息",
+                quote=f"来自 URL 输入：{task.query_or_url}",
+                confidence=0.72,
+                freshness="unknown",
+                content_hash=_hash_text(task.query_or_url),
+                license_risk="low",
+            )
+        ]
     except URLAdapterError as e:
         logger.warning(f"URL抓取失败 {task.query_or_url}: {e}")
         return [
@@ -101,26 +134,31 @@ def _execute_url_task(task: ResearchTask) -> List[Evidence]:
         ]
 
 
+def _extract_feature_snippet(content: str) -> str:
+    """从页面正文中提取含参数关键词的段落"""
+    lines = [line.strip() for line in content.split("\n") if line.strip()]
+    feature_lines = [line for line in lines if FEATURE_KEYWORDS.search(line)]
+    if feature_lines:
+        return "\n".join(feature_lines[:8])
+    return content[:800]
+
+
 def _execute_search_task(task: ResearchTask) -> List[Evidence]:
     """执行搜索任务"""
     from app.services.search_adapter import search_adapter
-    
-    evidences = search_adapter.search_for_competitor(task.competitor, task.query_or_url)
-    return evidences
+
+    return search_adapter.search_for_competitor(task.competitor, task.query_or_url)
 
 
 def _execute_comment_task(task: ResearchTask) -> List[Evidence]:
     """执行评论聚类任务"""
     from app.services.comment_adapter import comment_adapter
-    
-    evidences = comment_adapter.cluster(task.query_or_url, task.competitor)
-    return evidences
+
+    return comment_adapter.cluster(task.query_or_url, task.competitor)
 
 
 def _execute_image_task(task: ResearchTask) -> List[Evidence]:
     """执行图片任务"""
-    import hashlib
-    
     return [
         Evidence(
             source_type=SourceType.image,
@@ -138,5 +176,4 @@ def _execute_image_task(task: ResearchTask) -> List[Evidence]:
 
 
 def _hash_text(text: str) -> str:
-    import hashlib
     return hashlib.sha256(text.encode("utf-8")).hexdigest()

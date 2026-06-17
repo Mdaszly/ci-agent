@@ -5,16 +5,22 @@ from unittest.mock import MagicMock, patch
 from app.models.schemas import (
     CoverageGateResult,
     DecisionAction,
+    DecisionChunkType,
+    DecisionMemoryItem,
     DecisionPack,
+    DecisionPackStatus,
+    DecisionPackVersion,
     Evidence,
     EvidenceDimension,
     ReviewScore,
+    ReviewStatus,
     SourceType,
     TaskCreateRequest,
     TaskRecord,
     ResearchPlan,
     ResearchTask,
     TaskStatus,
+    WorkflowMemoryState,
 )
 from app.worker.workflow import (
     REQUIRED_DIMENSIONS,
@@ -26,6 +32,8 @@ from app.worker.workflow import (
     writer,
     reviewer,
     route_after_reviewer,
+    _repair_decision_pack,
+    _should_stop,
 )
 
 
@@ -348,10 +356,29 @@ class TestPlanner:
         state = planner({"task": task})
 
         assert state["task"].research_plan is not None
-        assert len(state["task"].research_plan.tasks) == 2
-        assert all(t.source_type == "url" for t in state["task"].research_plan.tasks)
-        assert state["task"].research_plan.tasks[0].competitor == "CompetitorA"
-        assert state["task"].research_plan.tasks[1].competitor == "CompetitorB"
+        url_tasks = [t for t in state["task"].research_plan.tasks if t.source_type == "url"]
+        search_tasks = [t for t in state["task"].research_plan.tasks if t.source_type == "search"]
+        assert len(url_tasks) == 2
+        assert len(search_tasks) == 2
+        assert url_tasks[0].competitor == "CompetitorA"
+        assert url_tasks[1].competitor == "CompetitorB"
+
+    def test_workflow_planner_generates_research_plan_with_competitor_urls(self):
+        request = TaskCreateRequest(
+            product_goal="Test product goal",
+            competitors=["CompetitorA", "CompetitorB"],
+            competitor_urls=[
+                {"competitor": "CompetitorB", "url": "https://example.com/b"},
+                {"competitor": "CompetitorA", "url": "https://example.com/a"},
+            ],
+        )
+        task = TaskRecord(request=request)
+        state = planner({"task": task})
+
+        url_tasks = [t for t in state["task"].research_plan.tasks if t.source_type == "url"]
+        assert len(url_tasks) == 2
+        assert url_tasks[0].competitor == "CompetitorB"
+        assert url_tasks[1].competitor == "CompetitorA"
 
     def test_workflow_planner_generates_research_plan_without_urls(self):
         request = TaskCreateRequest(
@@ -762,404 +789,192 @@ def test_reviewer_does_not_trigger_rewrite_on_high_score():
     assert result == END
 
 
-class TestWriterParsesFourCategories:
-    """测试 Writer 能正确解析 4 类输出"""
-
-    @patch("app.worker.workflow.llm_client")
-    def test_writer_parses_all_four_categories(self, mock_llm):
-        """测试 Writer 能正确解析 positioning、mvp_priorities、pricing_insights、battlecard"""
-        request = TaskCreateRequest(
-            product_goal="Test product goal",
-            competitors=["TestCompetitor"],
-        )
-        task = TaskRecord(request=request)
-        
-        # 设置包含定价维度的证据
-        task.evidence = [
-            Evidence(
-                id="ev_feature_1",
-                source_type=SourceType.url,
-                source_url="https://example.com",
-                competitor="TestCompetitor",
+def test_versioned_repair_marks_previous_pack_superseded():
+    request = TaskCreateRequest(
+        product_goal="Test product goal",
+        competitors=["TestCompetitor"],
+    )
+    task = TaskRecord(request=request)
+    task.evidence = [
+        Evidence(
+            id="ev_feature_1",
+            source_type=SourceType.url,
+            source_url="https://example.com",
+            competitor="TestCompetitor",
+            dimension=EvidenceDimension.feature,
+            claim="Feature evidence",
+            quote="Feature content",
+            confidence=0.85,
+            freshness="recent",
+            content_hash="hash1",
+            quality_score=0.7,
+            credibility_score=0.6,
+        ),
+        Evidence(
+            id="ev_pricing_1",
+            source_type=SourceType.url,
+            source_url="https://example.com/pricing",
+            competitor="TestCompetitor",
+            dimension=EvidenceDimension.pricing,
+            claim="Pricing evidence",
+            quote="$9.99 per month",
+            confidence=0.88,
+            freshness="recent",
+            content_hash="hash2",
+            quality_score=0.78,
+            credibility_score=0.72,
+        ),
+    ]
+    task.decision_pack = DecisionPack(
+        positioning=[
+            DecisionAction(
+                title="定位建议",
+                dimension=EvidenceDimension.positioning,
+                recommendation="先做基础定位",
+                rationale="基于现有证据",
+                evidence_ids=["ev_feature_1"],
+                priority="P0",
+            )
+        ],
+        mvp_priorities=[
+            DecisionAction(
+                title="MVP建议",
                 dimension=EvidenceDimension.feature,
-                claim="Feature evidence",
-                quote="Feature content",
-                confidence=0.85,
-                freshness="recent",
-                content_hash="hash1",
-                quality_score=0.7,
-                credibility_score=0.6,
-            ),
-            Evidence(
-                id="ev_pricing_1",
-                source_type=SourceType.url,
-                source_url="https://example.com/pricing",
-                competitor="TestCompetitor",
+                recommendation="优先核心功能",
+                rationale="基于现有证据",
+                evidence_ids=["ev_feature_1"],
+                priority="P0",
+            )
+        ],
+        pricing_insights=[
+            DecisionAction(
+                title="定价建议",
                 dimension=EvidenceDimension.pricing,
-                claim="Pricing evidence",
-                quote="$9.99 per month",
-                confidence=0.85,
-                freshness="recent",
-                content_hash="hash2",
-                quality_score=0.75,
-                credibility_score=0.7,
-            ),
-            Evidence(
-                id="ev_feedback_1",
-                source_type=SourceType.text,
-                competitor="TestCompetitor",
-                dimension=EvidenceDimension.user_feedback,
-                claim="User feedback",
-                quote="User comments",
-                confidence=0.68,
-                freshness="user-provided",
-                content_hash="hash3",
-                quality_score=0.6,
-                credibility_score=0.5,
-            ),
-        ]
-        
-        # Mock LLM 返回 4 类输出
-        mock_llm.chat_completion_json_sync.return_value = {
-            "summary": "综合分析报告",
-            "positioning": [
-                {
-                    "title": "差异化定位",
-                    "dimension": "positioning",
-                    "recommendation": "基于用户反馈的差异化定位",
-                    "rationale": "用户反馈支持此定位",
-                    "evidence_ids": ["ev_feedback_1"],
-                    "priority": "P0",
-                }
-            ],
-            "mvp_priorities": [
-                {
-                    "title": "核心功能优先级",
-                    "dimension": "feature",
-                    "recommendation": "优先开发核心功能",
-                    "rationale": "功能证据支持",
-                    "evidence_ids": ["ev_feature_1"],
-                    "priority": "P0",
-                }
-            ],
-            "pricing_insights": [
-                {
-                    "title": "定价策略洞察",
-                    "dimension": "pricing",
-                    "recommendation": "采用竞争性定价策略",
-                    "rationale": "竞品定价证据支持",
-                    "evidence_ids": ["ev_pricing_1"],
-                    "priority": "P0",
-                }
-            ],
-            "battlecard": [
-                {
-                    "title": "竞争策略卡片",
-                    "dimension": "positioning",
-                    "recommendation": "突出差异化优势",
-                    "rationale": "基于功能对比分析",
-                    "evidence_ids": ["ev_feature_1"],
-                    "priority": "P1",
-                }
-            ],
-        }
-        
-        state = writer({"task": task})
-        
-        # 验证决策包已生成
-        assert state["task"].decision_pack is not None
-        
-        # 验证 positioning 解析正确
-        assert len(state["task"].decision_pack.positioning) == 1
-        assert state["task"].decision_pack.positioning[0].title == "差异化定位"
-        assert state["task"].decision_pack.positioning[0].evidence_ids == ["ev_feedback_1"]
-        
-        # 验证 mvp_priorities 解析正确
-        assert len(state["task"].decision_pack.mvp_priorities) == 1
-        assert state["task"].decision_pack.mvp_priorities[0].title == "核心功能优先级"
-        assert state["task"].decision_pack.mvp_priorities[0].evidence_ids == ["ev_feature_1"]
-        
-        # 验证 pricing_insights 解析正确
-        assert len(state["task"].decision_pack.pricing_insights) == 1
-        assert state["task"].decision_pack.pricing_insights[0].title == "定价策略洞察"
-        assert state["task"].decision_pack.pricing_insights[0].evidence_ids == ["ev_pricing_1"]
-        
-        # 验证 battlecard 解析正确
-        assert len(state["task"].decision_pack.battlecard) == 1
-        assert state["task"].decision_pack.battlecard[0].title == "竞争策略卡片"
-        assert state["task"].decision_pack.battlecard[0].evidence_ids == ["ev_feature_1"]
+                recommendation="保持价格竞争力",
+                rationale="基于现有证据",
+                evidence_ids=["ev_pricing_1"],
+                priority="P0",
+            )
+        ],
+        battlecard=[],
+        summary="初版决策包",
+    )
+    task.review = ReviewScore(
+        score=0.45,
+        citation_precision=0.5,
+        claim_support_rate=0.5,
+        hallucination_risk="medium",
+        notes=["需要局部修复", "补充定价说明"],
+    )
+    task.coverage = CoverageGateResult(
+        passed=False,
+        score=0.5,
+        covered_dimensions=[EvidenceDimension.feature, EvidenceDimension.pricing],
+        missing_dimensions=[EvidenceDimension.user_feedback],
+        gap_queries=["TestCompetitor user feedback"],
+    )
+    task.memory_state = WorkflowMemoryState(max_iterations=2, current_iteration=0)
 
-    @patch("app.worker.workflow.llm_client")
-    def test_writer_evidence_ids_binding_correct(self, mock_llm):
-        """验证每类产物的 evidence_ids 绑定正确"""
-        request = TaskCreateRequest(
-            product_goal="Test product goal",
-            competitors=["TestCompetitor"],
-        )
-        task = TaskRecord(request=request)
-        
-        # 设置多个证据
-        task.evidence = [
-            Evidence(
-                id="ev_1",
-                source_type=SourceType.url,
-                source_url="https://example.com",
-                competitor="TestCompetitor",
-                dimension=EvidenceDimension.feature,
-                claim="Feature evidence 1",
-                quote="Feature content 1",
-                confidence=0.85,
-                freshness="recent",
-                content_hash="hash1",
-                quality_score=0.7,
-                credibility_score=0.6,
-            ),
-            Evidence(
-                id="ev_2",
-                source_type=SourceType.url,
-                source_url="https://example.com/pricing",
-                competitor="TestCompetitor",
-                dimension=EvidenceDimension.pricing,
-                claim="Pricing evidence",
-                quote="$9.99",
-                confidence=0.85,
-                freshness="recent",
-                content_hash="hash2",
-                quality_score=0.75,
-                credibility_score=0.7,
-            ),
-            Evidence(
-                id="ev_3",
-                source_type=SourceType.text,
-                competitor="TestCompetitor",
-                dimension=EvidenceDimension.user_feedback,
-                claim="User feedback",
-                quote="User comments",
-                confidence=0.68,
-                freshness="user-provided",
-                content_hash="hash3",
-                quality_score=0.6,
-                credibility_score=0.5,
-            ),
-        ]
-        
-        # Mock LLM 返回多证据绑定
-        mock_llm.chat_completion_json_sync.return_value = {
-            "summary": "综合分析",
-            "positioning": [
-                {
-                    "title": "定位建议",
-                    "dimension": "positioning",
-                    "recommendation": "定位建议内容",
-                    "rationale": "基于多证据",
-                    "evidence_ids": ["ev_1", "ev_3"],  # 绑定多个证据
-                    "priority": "P0",
-                }
-            ],
-            "mvp_priorities": [
-                {
-                    "title": "功能建议",
-                    "dimension": "feature",
-                    "recommendation": "功能建议内容",
-                    "rationale": "基于功能证据",
-                    "evidence_ids": ["ev_1"],
-                    "priority": "P0",
-                }
-            ],
-            "pricing_insights": [
-                {
-                    "title": "定价建议",
-                    "dimension": "pricing",
-                    "recommendation": "定价建议内容",
-                    "rationale": "基于定价证据",
-                    "evidence_ids": ["ev_2"],
-                    "priority": "P0",
-                }
-            ],
-            "battlecard": [
-                {
-                    "title": "竞争卡片",
-                    "dimension": "positioning",
-                    "recommendation": "竞争策略",
-                    "rationale": "基于综合证据",
-                    "evidence_ids": ["ev_1", "ev_2", "ev_3"],  # 绑定所有证据
-                    "priority": "P1",
-                }
-            ],
-        }
-        
-        state = writer({"task": task})
-        
-        # 验证 evidence_ids 绑定正确
-        assert state["task"].decision_pack.positioning[0].evidence_ids == ["ev_1", "ev_3"]
-        assert state["task"].decision_pack.mvp_priorities[0].evidence_ids == ["ev_1"]
-        assert state["task"].decision_pack.pricing_insights[0].evidence_ids == ["ev_2"]
-        assert state["task"].decision_pack.battlecard[0].evidence_ids == ["ev_1", "ev_2", "ev_3"]
+    repaired = _repair_decision_pack(task, [])
+
+    assert repaired is True
+    assert task.decision_pack is not None
+    assert task.decision_pack.version == 2
+    assert task.decision_pack.status == DecisionPackStatus.draft
+    assert any(item.version == 1 and item.status == DecisionPackStatus.superseded for item in task.decision_history)
+    assert task.memory_state is not None
+    assert task.memory_state.current_pack_version == 2
+    assert task.memory_state.last_reviewer_status == ReviewStatus.needs_retry
 
 
-class TestWriterPricingInsightsEmpty:
-    """测试无定价证据时 pricing_insights 为空"""
+def test_route_after_reviewer_stops_when_max_iterations_reached():
+    request = TaskCreateRequest(
+        product_goal="Test product goal",
+        competitors=["TestCompetitor"],
+    )
+    task = TaskRecord(request=request)
+    task.review = ReviewScore(
+        score=0.45,
+        citation_precision=0.5,
+        claim_support_rate=0.5,
+        hallucination_risk="high",
+        notes=["still failing"],
+    )
+    task.memory_state = WorkflowMemoryState(max_iterations=1, current_iteration=1)
 
-    @patch("app.worker.workflow.llm_client")
-    def test_pricing_insights_empty_without_pricing_evidence(self, mock_llm):
-        """测试当任务不包含定价维度证据时，pricing_insights 为空列表"""
-        request = TaskCreateRequest(
-            product_goal="Test product goal",
-            competitors=["TestCompetitor"],
-        )
-        task = TaskRecord(request=request)
-        
-        # 设置不包含定价维度的证据
-        task.evidence = [
-            Evidence(
-                id="ev_feature_1",
-                source_type=SourceType.url,
-                source_url="https://example.com",
-                competitor="TestCompetitor",
-                dimension=EvidenceDimension.feature,
-                claim="Feature evidence",
-                quote="Feature content",
-                confidence=0.85,
-                freshness="recent",
-                content_hash="hash1",
-                quality_score=0.7,
-                credibility_score=0.6,
-            ),
-            Evidence(
-                id="ev_feedback_1",
-                source_type=SourceType.text,
-                competitor="TestCompetitor",
-                dimension=EvidenceDimension.user_feedback,
-                claim="User feedback",
-                quote="User comments",
-                confidence=0.68,
-                freshness="user-provided",
-                content_hash="hash3",
-                quality_score=0.6,
-                credibility_score=0.5,
-            ),
-        ]
-        
-        # Mock LLM 返回（即使 LLM 尝试返回 pricing_insights，Writer 也应忽略）
-        mock_llm.chat_completion_json_sync.return_value = {
-            "summary": "综合分析报告",
-            "positioning": [
-                {
-                    "title": "差异化定位",
-                    "dimension": "positioning",
-                    "recommendation": "基于用户反馈的差异化定位",
-                    "rationale": "用户反馈支持此定位",
-                    "evidence_ids": ["ev_feedback_1"],
-                    "priority": "P0",
-                }
-            ],
-            "mvp_priorities": [
-                {
-                    "title": "核心功能优先级",
-                    "dimension": "feature",
-                    "recommendation": "优先开发核心功能",
-                    "rationale": "功能证据支持",
-                    "evidence_ids": ["ev_feature_1"],
-                    "priority": "P0",
-                }
-            ],
-            "pricing_insights": [],  # 应为空
-            "battlecard": [
-                {
-                    "title": "竞争策略卡片",
-                    "dimension": "positioning",
-                    "recommendation": "突出差异化优势",
-                    "rationale": "基于功能对比分析",
-                    "evidence_ids": ["ev_feature_1"],
-                    "priority": "P1",
-                }
-            ],
-        }
-        
-        state = writer({"task": task})
-        
-        # 验证 pricing_insights 为空
-        assert state["task"].decision_pack is not None
-        assert state["task"].decision_pack.pricing_insights == []
-        
-        # 验证其他产物正常生成
-        assert len(state["task"].decision_pack.positioning) == 1
-        assert len(state["task"].decision_pack.mvp_priorities) == 1
-        assert len(state["task"].decision_pack.battlecard) == 1
+    assert _should_stop(task) is True
+    from langgraph.graph import END
+    assert route_after_reviewer({"task": task}) == END
 
-    @patch("app.worker.workflow.llm_client")
-    def test_writer_does_not_fabricate_pricing_insights(self, mock_llm):
-        """验证 Writer 不编造定价洞察"""
-        request = TaskCreateRequest(
-            product_goal="Test product goal",
-            competitors=["TestCompetitor"],
-        )
-        task = TaskRecord(request=request)
-        
-        # 设置不包含定价维度的证据
-        task.evidence = [
-            Evidence(
-                id="ev_feature_1",
-                source_type=SourceType.url,
-                source_url="https://example.com",
-                competitor="TestCompetitor",
-                dimension=EvidenceDimension.feature,
-                claim="Feature evidence",
-                quote="Feature content",
-                confidence=0.85,
-                freshness="recent",
-                content_hash="hash1",
-                quality_score=0.7,
-                credibility_score=0.6,
-            ),
-        ]
-        
-        # Mock LLM 尝试返回定价洞察（但应该被忽略）
-        mock_llm.chat_completion_json_sync.return_value = {
-            "summary": "分析报告",
-            "positioning": [
-                {
-                    "title": "定位建议",
-                    "dimension": "positioning",
-                    "recommendation": "定位建议",
-                    "rationale": "基于功能证据",
-                    "evidence_ids": ["ev_feature_1"],
-                    "priority": "P0",
-                }
-            ],
-            "mvp_priorities": [],
-            "pricing_insights": [
-                {
-                    "title": "编造的定价洞察",
-                    "dimension": "pricing",
-                    "recommendation": "编造的定价建议",
-                    "rationale": "无证据支持",
-                    "evidence_ids": ["ev_feature_1"],  # 尝试用非定价证据
-                    "priority": "P0",
-                }
-            ],
-            "battlecard": [],
-        }
-        
-        state = writer({"task": task})
-        
-        # 验证 pricing_insights 为空（因为无定价证据）
-        assert state["task"].decision_pack is not None
-        assert state["task"].decision_pack.pricing_insights == []
+
+@patch("app.worker.workflow.llm_client")
+def test_writer_filters_pricing_insights_without_pricing_evidence(mock_llm):
+    request = TaskCreateRequest(
+        product_goal="Test product goal",
+        competitors=["TestCompetitor"],
+    )
+    task = TaskRecord(request=request)
+
+    task.evidence = [
+        Evidence(
+            id="ev_feature_1",
+            source_type=SourceType.url,
+            source_url="https://example.com",
+            competitor="TestCompetitor",
+            dimension=EvidenceDimension.feature,
+            claim="Feature evidence",
+            quote="Feature content",
+            confidence=0.85,
+            freshness="recent",
+            content_hash="hash1",
+            quality_score=0.7,
+            credibility_score=0.6,
+        ),
+    ]
+
+    mock_llm.chat_completion_json_sync.return_value = {
+        "summary": "????",
+        "positioning": [
+            {
+                "title": "????",
+                "dimension": "positioning",
+                "recommendation": "????",
+                "rationale": "??????",
+                "evidence_ids": ["ev_feature_1"],
+                "priority": "P0",
+            }
+        ],
+        "mvp_priorities": [],
+        "pricing_insights": [
+            {
+                "title": "???????",
+                "dimension": "pricing",
+                "recommendation": "???????",
+                "rationale": "?????",
+                "evidence_ids": ["ev_feature_1"],
+                "priority": "P0",
+            }
+        ],
+        "battlecard": [],
+    }
+
+    state = writer({"task": task})
+
+    assert state["task"].decision_pack is not None
+    assert state["task"].decision_pack.pricing_insights == []
 
 
 class TestReviewerValidatesEvidenceIds:
-    """测试 Reviewer 校验新字段 evidence_ids"""
+    """?? Reviewer ????? evidence_ids"""
 
     def test_reviewer_validates_pricing_insights_evidence_ids(self):
-        """测试 Reviewer 能正确校验 pricing_insights 的 evidence_ids"""
+        """?? Reviewer ????? pricing_insights ? evidence_ids"""
         request = TaskCreateRequest(
             product_goal="Test product goal",
             competitors=["TestCompetitor"],
         )
         task = TaskRecord(request=request)
-        
-        # 设置证据
+
         task.evidence = [
             Evidence(
                 id="ev_pricing_1",
@@ -1190,8 +1005,7 @@ class TestReviewerValidatesEvidenceIds:
                 credibility_score=0.6,
             ),
         ]
-        
-        # 设置 coverage
+
         task.coverage = CoverageGateResult(
             passed=True,
             score=1.0,
@@ -1199,41 +1013,38 @@ class TestReviewerValidatesEvidenceIds:
             missing_dimensions=[],
             gap_queries=[],
         )
-        
-        # 设置决策包，pricing_insights 引用有效的定价证据
+
         task.decision_pack = DecisionPack(
             positioning=[],
             mvp_priorities=[],
             pricing_insights=[
                 DecisionAction(
-                    title="定价洞察",
+                    title="????",
                     dimension=EvidenceDimension.pricing,
-                    recommendation="定价建议",
-                    rationale="基于定价证据",
+                    recommendation="????",
+                    rationale="??????",
                     evidence_ids=["ev_pricing_1"],
                     priority="P0",
                 )
             ],
             battlecard=[],
-            summary="测试",
+            summary="??",
         )
-        
+
         state = reviewer({"task": task})
-        
-        # 验证 review 通过
+
         assert state["task"].review is not None
         assert state["task"].review.hallucination_risk in ["low", "medium"]
-        assert "所有决策动作均绑定 Evidence ID" in state["task"].review.notes
+        assert "????????? Evidence ID" in state["task"].review.notes
 
     def test_reviewer_detects_invalid_pricing_insights_evidence_ids(self):
-        """测试 Reviewer 检测 pricing_insights 的无效 evidence_ids"""
+        """?? Reviewer ?? pricing_insights ??? evidence_ids"""
         request = TaskCreateRequest(
             product_goal="Test product goal",
             competitors=["TestCompetitor"],
         )
         task = TaskRecord(request=request)
-        
-        # 设置证据
+
         task.evidence = [
             Evidence(
                 id="ev_pricing_1",
@@ -1250,7 +1061,7 @@ class TestReviewerValidatesEvidenceIds:
                 credibility_score=0.7,
             ),
         ]
-        
+
         task.coverage = CoverageGateResult(
             passed=True,
             score=1.0,
@@ -1258,42 +1069,39 @@ class TestReviewerValidatesEvidenceIds:
             missing_dimensions=[],
             gap_queries=[],
         )
-        
-        # 设置决策包，pricing_insights 引用无效的 evidence_id
+
         task.decision_pack = DecisionPack(
             positioning=[],
             mvp_priorities=[],
             pricing_insights=[
                 DecisionAction(
-                    title="定价洞察",
+                    title="????",
                     dimension=EvidenceDimension.pricing,
-                    recommendation="定价建议",
-                    rationale="基于无效证据",
-                    evidence_ids=["ev_invalid_id"],  # 无效的 ID
+                    recommendation="????",
+                    rationale="??????",
+                    evidence_ids=["ev_invalid_id"],
                     priority="P0",
                 )
             ],
             battlecard=[],
-            summary="测试",
+            summary="??",
         )
-        
+
         state = reviewer({"task": task})
-        
-        # 验证 review 检测到问题
+
         assert state["task"].review is not None
         assert state["task"].review.hallucination_risk == "high"
         assert any("pricing_insights" in note for note in state["task"].review.notes)
 
     @patch("app.worker.workflow.llm_client")
     def test_reviewer_validates_battlecard_evidence_ids(self, mock_llm):
-        """测试 Reviewer 能正确校验 battlecard 的 evidence_ids"""
+        """?? Reviewer ????? battlecard ? evidence_ids"""
         request = TaskCreateRequest(
             product_goal="Test product goal",
             competitors=["TestCompetitor"],
         )
         task = TaskRecord(request=request)
-        
-        # 设置证据（包含 positioning 维度证据）
+
         task.evidence = [
             Evidence(
                 id="ev_positioning_1",
@@ -1310,7 +1118,7 @@ class TestReviewerValidatesEvidenceIds:
                 credibility_score=0.6,
             ),
         ]
-        
+
         task.coverage = CoverageGateResult(
             passed=True,
             score=1.0,
@@ -1318,47 +1126,43 @@ class TestReviewerValidatesEvidenceIds:
             missing_dimensions=[],
             gap_queries=[],
         )
-        
-        # 设置决策包，battlecard 引用有效的证据（维度匹配）
+
         task.decision_pack = DecisionPack(
             positioning=[],
             mvp_priorities=[],
             pricing_insights=[],
             battlecard=[
                 DecisionAction(
-                    title="竞争策略卡片",
+                    title="??????",
                     dimension=EvidenceDimension.positioning,
-                    recommendation="竞争策略建议",
-                    rationale="基于定位证据",
+                    recommendation="??????",
+                    rationale="??????",
                     evidence_ids=["ev_positioning_1"],
                     priority="P0",
                 )
             ],
-            summary="测试",
+            summary="??",
         )
-        
-        # Mock LLM 返回正常校验结果
+
         mock_llm.chat_completion_json_sync.return_value = {
             "score_adjustment": 0.0,
             "hallucination_risk": "low",
-            "notes": ["battlecard 有合理的竞争策略建议"],
+            "notes": ["battlecard ??????????"],
         }
-        
+
         state = reviewer({"task": task})
-        
-        # 验证 review 通过
+
         assert state["task"].review is not None
         assert state["task"].review.hallucination_risk in ["low", "medium"]
 
     def test_reviewer_detects_battlecard_without_evidence(self):
-        """测试 Reviewer 检测 battlecard 缺少证据支撑"""
+        """?? Reviewer ?? battlecard ??????"""
         request = TaskCreateRequest(
             product_goal="Test product goal",
             competitors=["TestCompetitor"],
         )
         task = TaskRecord(request=request)
-        
-        # 设置证据
+
         task.evidence = [
             Evidence(
                 id="ev_feature_1",
@@ -1375,7 +1179,7 @@ class TestReviewerValidatesEvidenceIds:
                 credibility_score=0.6,
             ),
         ]
-        
+
         task.coverage = CoverageGateResult(
             passed=True,
             score=1.0,
@@ -1383,39 +1187,36 @@ class TestReviewerValidatesEvidenceIds:
             missing_dimensions=[],
             gap_queries=[],
         )
-        
-        # 设置决策包，battlecard 的 evidence_ids 为空
+
         task.decision_pack = DecisionPack(
             positioning=[],
             mvp_priorities=[],
             pricing_insights=[],
             battlecard=[
                 DecisionAction(
-                    title="竞争策略卡片",
+                    title="??????",
                     dimension=EvidenceDimension.positioning,
-                    recommendation="竞争策略建议",
-                    rationale="无证据支撑",
-                    evidence_ids=["ev_feature_1"],  # 有证据
+                    recommendation="??????",
+                    rationale="?????",
+                    evidence_ids=["ev_feature_1"],
                     priority="P0",
                 )
             ],
-            summary="测试",
+            summary="??",
         )
-        
+
         state = reviewer({"task": task})
-        
-        # 验证 review 正常（有证据支撑）
+
         assert state["task"].review is not None
 
     def test_reviewer_detects_pricing_insights_without_pricing_evidence(self):
-        """测试幻觉风险检测：pricing_insights 未引用定价维度证据"""
+        """?????????pricing_insights ?????????"""
         request = TaskCreateRequest(
             product_goal="Test product goal",
             competitors=["TestCompetitor"],
         )
         task = TaskRecord(request=request)
-        
-        # 设置证据（包含定价证据）
+
         task.evidence = [
             Evidence(
                 id="ev_pricing_1",
@@ -1446,7 +1247,7 @@ class TestReviewerValidatesEvidenceIds:
                 credibility_score=0.6,
             ),
         ]
-        
+
         task.coverage = CoverageGateResult(
             passed=True,
             score=1.0,
@@ -1454,31 +1255,29 @@ class TestReviewerValidatesEvidenceIds:
             missing_dimensions=[],
             gap_queries=[],
         )
-        
-        # 设置决策包，pricing_insights 引用非定价证据（幻觉风险）
+
         task.decision_pack = DecisionPack(
             positioning=[],
             mvp_priorities=[],
             pricing_insights=[
                 DecisionAction(
-                    title="定价洞察",
+                    title="????",
                     dimension=EvidenceDimension.pricing,
-                    recommendation="定价建议",
-                    rationale="基于功能证据（错误）",
-                    evidence_ids=["ev_feature_1"],  # 引用非定价证据
+                    recommendation="????",
+                    rationale="??????????",
+                    evidence_ids=["ev_feature_1"],
                     priority="P0",
                 )
             ],
             battlecard=[],
-            summary="测试",
+            summary="??",
         )
-        
+
         state = reviewer({"task": task})
-        
-        # 验证 review 检测到幻觉风险
+
         assert state["task"].review is not None
         assert state["task"].review.hallucination_risk == "high"
-        assert any("pricing_insights" in note and "定价" in note for note in state["task"].review.notes)
+        assert any("pricing_insights" in note and "??" in note for note in state["task"].review.notes)
 
 
 class TestTaskMetrics:

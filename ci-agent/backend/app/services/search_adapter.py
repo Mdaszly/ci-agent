@@ -130,8 +130,12 @@ class SearchAdapter:
             "positioning", "brand", "differentiation", "unique",
             "定位", "品牌", "差异化", "独特", "优势",
         ],
+        EvidenceDimension.feature: [
+            "feature", "function", "spec", "parameter", "capability",
+            "功能", "特性", "参数", "规格", "风力", "风速", "续航", "噪音", "便携",
+        ],
         EvidenceDimension.risk: [
-            "risk", "risk", "issue", "problem", "concern", "complaint",
+            "risk", "issue", "problem", "concern", "complaint",
             "风险", "问题", "隐患", "缺点", "劣势", "不足",
         ],
     }
@@ -203,10 +207,10 @@ class SearchAdapter:
         ]
         
         evidences = []
-        for query in queries[:2]:  # 限制搜索次数
+        for query in queries:
             results = self.search(query, competitor)
             evidences.extend(results)
-        
+
         return evidences
 
 

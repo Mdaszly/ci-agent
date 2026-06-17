@@ -41,9 +41,12 @@ class DatabaseConfig(BaseSettings):
     username: str = "postgres"
     password: str = "postgres"
     database: str = "ci_agent"
+    use_sqlite: bool = True
     
     @property
     def url(self) -> str:
+        if self.use_sqlite:
+            return "sqlite+aiosqlite:///./data/ci_agent.db"
         return f"postgresql+asyncpg://{self.username}:{self.password}@{self.host}:{self.port}/{self.database}"
 
 

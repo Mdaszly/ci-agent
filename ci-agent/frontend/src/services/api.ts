@@ -5,6 +5,29 @@ import type { components, paths } from "./openapi";
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const IS_DEV = import.meta.env.MODE === "development";
 
+// #region agent log
+const DEBUG_SESSION_ID = "43496882-51bc-41f7-948d-6fd94772f027";
+const DEBUG_LOG_ENDPOINT = "http://127.0.0.1:7337/ingest/43496882-51bc-41f7-948d-6fd94772f027";
+function debugLog(location: string, message: string, data: Record<string, unknown>, hypothesisId: string, runId = "run1") {
+  fetch(DEBUG_LOG_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Debug-Session-Id": DEBUG_SESSION_ID,
+    },
+    body: JSON.stringify({
+      sessionId: DEBUG_SESSION_ID,
+      location,
+      message,
+      data,
+      timestamp: Date.now(),
+      runId,
+      hypothesisId,
+    }),
+  }).catch(() => {});
+}
+// #endregion
+
 const client = createClient<paths>({
   baseUrl: API_BASE,
   headers: IS_DEV
@@ -28,28 +51,117 @@ export type DecisionPack = ApiSchema<"DecisionPack">;
 export type ReviewScore = ApiSchema<"ReviewScore">;
 export type BudgetUsage = ApiSchema<"BudgetUsage">;
 export type TaskRecord = ApiSchema<"TaskRecord">;
-export type InterventionRequest = ApiSchema<"InterventionRequest">;
 export type TaskMetrics = ApiSchema<"TaskMetrics">;
+export type InterventionRequest = ApiSchema<"InterventionRequest">;
+export interface ReflowControls {
+  enable_memory_recall?: boolean;
+  max_repair_rounds?: number;
+  auto_publish_final?: boolean;
+}
+
+export type RichTaskCreateRequest = TaskCreateRequest & {
+  reflow_controls?: ReflowControls;
+};
+
+export type RichTaskRecord = TaskRecord & {
+  decision_history?: Array<{
+    pack_id?: string;
+    version?: number;
+    parent_pack_id?: string | null;
+    superseded_by?: string | null;
+    status?: string;
+    summary?: string;
+    created_at?: string;
+  }>;
+  memory_state?: {
+    task_id?: string;
+    stage?: string;
+    iteration?: number;
+    max_iterations?: number;
+    source_refs?: string[];
+    risk_level?: string;
+    current_pack_version?: number;
+    last_reviewer_status?: string;
+    last_recall_count?: number;
+    last_recall_summary?: string;
+    retry_reason?: string;
+  } | null;
+  memory_items?: Array<{
+    id?: string;
+    task_id?: string;
+    pack_id?: string;
+    version?: number;
+    chunk_type?: string;
+    text?: string;
+    source_refs?: string[];
+    similarity?: number;
+  }>;
+  review_history?: Array<{
+    score?: number;
+    hallucination_risk?: string;
+    notes?: string[];
+    created_at?: string;
+  }>;
+};
+
+function stringifyDetail(detail: unknown): string | null {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const items = detail
+      .map((item) => stringifyDetail(item) ?? (typeof item === "object" && item !== null ? JSON.stringify(item) : String(item)))
+      .filter(Boolean);
+    return items.length > 0 ? items.join("；") : null;
+  }
+  if (detail && typeof detail === "object") {
+    const record = detail as Record<string, unknown>;
+    if (typeof record.msg === "string") return record.msg;
+    if (typeof record.message === "string") return record.message;
+    if ("loc" in record || "type" in record) {
+      const loc = Array.isArray(record.loc) ? record.loc.join(".") : undefined;
+      const message = typeof record.msg === "string" ? record.msg : typeof record.message === "string" ? record.message : null;
+      return [loc, message].filter(Boolean).join("：") || null;
+    }
+    if ("detail" in record) return stringifyDetail(record.detail);
+  }
+  return null;
+}
 
 function getErrorMessage(error: unknown): string {
-  if (typeof error === "object" && error !== null && "detail" in error) {
-    const detail = (error as { detail?: unknown }).detail;
-    if (typeof detail === "string") {
-      return detail;
+  if (typeof error === "string") {
+    return error;
+  }
+
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const candidates = [
+      record.detail,
+      record.message,
+      record.error,
+      record.errors,
+      record.response && typeof record.response === "object"
+        ? (record.response as Record<string, unknown>).data ?? (record.response as Record<string, unknown>).detail
+        : undefined,
+    ];
+
+    for (const candidate of candidates) {
+      const message = stringifyDetail(candidate);
+      if (message) {
+        return message;
+      }
     }
   }
+
   return "请求失败";
 }
 
 export async function createTask(
-  payload: TaskCreateRequest,
-): Promise<TaskRecord> {
+  payload: RichTaskCreateRequest,
+): Promise<RichTaskRecord> {
   try {
     const { data, error } = await client.POST("/api/tasks", {
       body: payload,
     });
     if (error) {
-      // 开发环境：显示详细错误信息便于调试
       if (IS_DEV) {
         console.debug("[API] createTask error:", error);
       }
@@ -60,37 +172,14 @@ export async function createTask(
     }
     return data;
   } catch (err) {
-    // 开发环境：不抛出致命错误，继续执行
     if (IS_DEV) {
-      console.warn("[API] createTask failed (development mode):", err);
-      return {
-        id: "dev-task-id",
-        request: payload,
-        status: "queued",
-        events: [],
-        evidence: [],
-        claims: [],
-        conflicts: [],
-        coverage: {
-          passed: true,
-          gap_queries: [],
-          score: 1,
-          covered_dimensions: [],
-          missing_dimensions: [],
-        },
-        budget_usage: {
-          estimated_sources: 0,
-          estimated_tokens: 0,
-          estimated_cost_usd: 0,
-          within_budget: true,
-        },
-      } as TaskRecord;
+      console.warn("[API] createTask failed:", err);
     }
     throw err;
   }
 }
 
-export async function getTask(taskId: string): Promise<TaskRecord> {
+export async function getTask(taskId: string): Promise<RichTaskRecord> {
   try {
     const { data, error } = await client.GET("/api/tasks/{task_id}", {
       params: { path: { task_id: taskId } },
@@ -129,7 +218,7 @@ export async function getTask(taskId: string): Promise<TaskRecord> {
           estimated_cost_usd: 0,
           within_budget: true,
         },
-      } as TaskRecord;
+      } as RichTaskRecord;
     }
     throw err;
   }
@@ -287,6 +376,19 @@ export function subscribeTaskEvents(
   }
 
   return { unsubscribe: cleanup };
+}
+
+export async function cancelTask(taskId: string): Promise<{ status: string; task: TaskRecord }> {
+  const response = await fetch(`${API_BASE}/api/tasks/${taskId}/cancel`, {
+    method: "POST",
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || "停止任务失败");
+  }
+
+  return response.json();
 }
 
 export interface InterventionResponse {

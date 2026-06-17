@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import math
+import threading
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -14,29 +15,50 @@ logger = logging.getLogger(__name__)
 from app.db.models import EvidenceDB, ResultDB, TaskDB, TaskStatus
 from app.db.session import AsyncSessionLocal
 from app.models.schemas import (
+    AnalysisProfile,
     BudgetUsage,
     Claim,
+    CompetitorUrl,
     Conflict,
     CoverageGateResult,
     DecisionAction,
     DecisionPack,
+    DecisionPackVersion,
     Evidence,
     EvidenceDimension,
     ReviewScore,
+    TaskCreateRequest,
     TaskEvent,
     TaskRecord,
+    WorkflowMemoryState,
 )
 
 
 def _run_async(coro):
     """在同步或异步上下文中安全执行协程。"""
     try:
-        loop = asyncio.get_running_loop()
-        if loop.is_running():
-            return asyncio.create_task(coro).result()
-        return loop.run_until_complete(coro)
+        asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
+
+    result: dict[str, Any] = {}
+    done = threading.Event()
+
+    def runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except Exception as exc:  # pragma: no cover - 透传到调用方
+            result["error"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    done.wait()
+
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
 
 
 def _coerce_score(value: Any, default: float = 0.5) -> float:
@@ -50,6 +72,36 @@ def _coerce_score(value: Any, default: float = 0.5) -> float:
         return min(1.0, max(0.0, score))
     except (TypeError, ValueError):
         return default
+
+
+def _serialize_urls(request: TaskCreateRequest) -> list:
+    if request.competitor_urls:
+        return [{"competitor": item.competitor, "url": str(item.url)} for item in request.competitor_urls]
+    return [str(url) for url in request.urls]
+
+
+def _deserialize_request(db_task: TaskDB) -> TaskCreateRequest:
+    raw_urls = db_task.urls or []
+    profile_data = db_task.analysis_profile or {}
+    analysis_profile = AnalysisProfile(**profile_data) if profile_data else AnalysisProfile()
+    if raw_urls and isinstance(raw_urls[0], dict):
+        competitor_urls = [CompetitorUrl(competitor=item["competitor"], url=item["url"]) for item in raw_urls]
+        return TaskCreateRequest(
+            product_goal=db_task.product_goal,
+            competitors=db_task.competitors,
+            competitor_urls=competitor_urls,
+            comments=db_task.comments,
+            image_names=db_task.image_names,
+            analysis_profile=analysis_profile,
+        )
+    return TaskCreateRequest(
+        product_goal=db_task.product_goal,
+        competitors=db_task.competitors,
+        urls=raw_urls,
+        comments=db_task.comments,
+        image_names=db_task.image_names,
+        analysis_profile=analysis_profile,
+    )
 
 
 async def _db_task_to_pydantic(db_task: TaskDB) -> TaskRecord:
@@ -102,6 +154,11 @@ async def _db_task_to_pydantic(db_task: TaskDB) -> TaskRecord:
                 gap_queries=cov_data.get("gap_queries", []),
             )
 
+        decision_history = [DecisionPackVersion(**item) for item in (db_task.decision_history or [])]
+        memory_state = WorkflowMemoryState(**db_task.memory_state) if db_task.memory_state else None
+        review = ReviewScore(**db_task.review) if db_task.review else None
+        current_version_meta = max(decision_history, key=lambda item: item.version, default=None)
+
         # 从 ResultDB 读取决策包和复核评分
         stmt = select(ResultDB).filter(ResultDB.task_id == db_task.id)
         result = await session.execute(stmt)
@@ -135,15 +192,7 @@ async def _db_task_to_pydantic(db_task: TaskDB) -> TaskRecord:
             if db_result.budget_usage:
                 budget_usage = BudgetUsage(**db_result.budget_usage)
 
-        # 重建 request 对象
-        from app.models.schemas import TaskCreateRequest
-        request = TaskCreateRequest(
-            product_goal=db_task.product_goal,
-            competitors=db_task.competitors,
-            urls=db_task.urls,
-            comments=db_task.comments,
-            image_names=db_task.image_names,
-        )
+        request = _deserialize_request(db_task)
 
         return TaskRecord(
             id=db_task.id,
@@ -154,6 +203,8 @@ async def _db_task_to_pydantic(db_task: TaskDB) -> TaskRecord:
             conflicts=conflicts,
             coverage=coverage,
             decision_pack=decision_pack,
+            decision_history=decision_history,
+            memory_state=memory_state,
             review=review,
             budget_usage=budget_usage,
             events=events,
@@ -174,6 +225,10 @@ class InMemoryTaskStore:
             async def test_conn():
                 async with AsyncSessionLocal() as session:
                     await session.execute(text("SELECT 1"))
+                    if session.bind and session.bind.dialect.name == "sqlite":
+                        result = await session.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tasks', 'evidence', 'results')"))
+                        tables = {row[0] for row in result.fetchall()}
+                        return {"tasks", "evidence", "results"}.issubset(tables)
                 return True
             return self._run_async(test_conn())
         except Exception as e:
@@ -192,8 +247,9 @@ class InMemoryTaskStore:
                         id=task.id,
                         product_goal=task.request.product_goal,
                         competitors=[str(c) for c in task.request.competitors],
-                        urls=[str(u) for u in task.request.urls],
+                        urls=_serialize_urls(task.request),
                         comments=task.request.comments,
+                        analysis_profile=task.request.analysis_profile.model_dump(mode="json"),
                         image_names=task.request.image_names,
                         status=task.status,
                         created_at=task.created_at,
@@ -201,6 +257,9 @@ class InMemoryTaskStore:
                         claims=[],
                         conflicts=[],
                         events=[],
+                        decision_history=[item.model_dump(mode="json") for item in task.decision_history],
+                        memory_state=task.memory_state.model_dump(mode="json") if task.memory_state else None,
+                        review=task.review.model_dump(mode="json") if task.review else None,
                     )
                     session.add(db_task)
                     await session.commit()
@@ -278,6 +337,10 @@ class InMemoryTaskStore:
                             }
                             for e in task.events
                         ]
+
+                        db_task.decision_history = [item.model_dump(mode="json") for item in task.decision_history]
+                        db_task.memory_state = task.memory_state.model_dump(mode="json") if task.memory_state else None
+                        db_task.review = task.review.model_dump(mode="json") if task.review else None
 
                         # 更新 coverage
                         if task.coverage:
@@ -393,6 +456,33 @@ class InMemoryTaskStore:
         task.events.append(event)
         self.update(task)
         return event
+
+    def update_status(
+        self,
+        task_id: str,
+        status: TaskStatus,
+        message: str | None = None,
+        stage: str = "task",
+    ) -> TaskRecord | None:
+        task = self.get(task_id)
+        if task is None:
+            return None
+        task.status = status
+        if message:
+            self.append_event(task, stage, message, status)
+        else:
+            self.update(task)
+        return task
+
+    def cancel(self, task_id: str, reason: str = "用户主动停止分析") -> TaskRecord | None:
+        task = self.get(task_id)
+        if task is None:
+            return None
+        if task.status in (TaskStatus.completed, TaskStatus.failed, TaskStatus.cancelled):
+            return task
+        task.status = TaskStatus.cancelled
+        self.append_event(task, "cancelled", reason, TaskStatus.cancelled)
+        return task
 
 
 task_store = InMemoryTaskStore()

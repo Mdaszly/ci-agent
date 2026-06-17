@@ -130,7 +130,7 @@ def estimate_source_count(url_count: int, has_comments: bool, image_count: int) 
 
 
 def validate_image_name(name: str) -> str:
-    if "/" in name or "\\" in name or ".." in name or not SAFE_IMAGE_NAME.match(name):
+    if "/" in name or "\\" in name or ".." in name or not SAFE_FILE_NAME.match(name):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="图片文件名不合法",

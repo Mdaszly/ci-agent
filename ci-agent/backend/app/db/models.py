@@ -15,6 +15,7 @@ class TaskStatus(str, Enum):
     queued = "queued"
     running = "running"
     completed = "completed"
+    cancelled = "cancelled"
     failed = "failed"
 
 
@@ -27,6 +28,7 @@ class TaskDB(Base):
     competitors = Column(JSON, nullable=False, comment="竞品列表")
     urls = Column(JSON, nullable=False, comment="URL列表")
     comments = Column(Text, comment="用户评论")
+    analysis_profile = Column(JSON, comment="分析策略与权重配置")
     image_names = Column(JSON, nullable=False, comment="图片文件名列表")
     status = Column(SQLAlchemyEnum(TaskStatus), nullable=False, default=TaskStatus.queued)
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
@@ -36,6 +38,9 @@ class TaskDB(Base):
     claims = Column(JSON, nullable=False, default=list, comment="从证据中提取的观点")
     conflicts = Column(JSON, nullable=False, default=list, comment="证据之间的矛盾")
     events = Column(JSON, nullable=False, default=list, comment="任务执行日志")
+    decision_history = Column(JSON, nullable=False, default=list, comment="决策包历史版本")
+    memory_state = Column(JSON, comment="工作流回流状态")
+    review = Column(JSON, comment="当前复核结果")
     
     # 覆盖检查结果
     coverage = Column(JSON, comment="维度覆盖检查结果")
