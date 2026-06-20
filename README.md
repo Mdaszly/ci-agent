@@ -48,6 +48,7 @@ ci-agent/
 ├── frontend/               # Vue 3 控制台
 ├── infra/                  # 本地容器编排
 ├── canvases/               # 架构画布
+├── docs/                   # 文档与界面截图
 └── README.md               # 当前文档
 ```
 
@@ -99,10 +100,19 @@ MEMORY_VECTOR_WEIGHT=0.7     # 线性加权时的向量权重
 MEMORY_LEXICAL_WEIGHT=0.3    # 线性加权时的词面权重
 ```
 
-### 前端重点
+### 前端页面
 
-- `frontend/src/App.vue`：任务输入、状态机展示、Reviewer/回流/终止原因可视化
-- `frontend/src/services/api.ts`：任务创建、任务查询、错误透传、事件订阅
+前端已经补齐多页面控制台，具体界面与截图放在 `docs/ui-gallery.md`，避免主文档继续膨胀。
+
+可直接跳转到以下页面：
+
+- 首页：`/`
+- 召回测试：`/recall`
+- 异常样本管理：`/bad-cases`
+- 记忆浏览器：`/memory`
+- 上下文监控：`/context`
+- 检查点时间线：`/checkpoints`
+- Agent 增强：`/agent-enhancements`
 
 ## 启动方式
 
@@ -139,6 +149,18 @@ docker compose up --build
 2. 生产环境设置 `ENVIRONMENT=production` 和 `CORS_ALLOWED_ORIGINS`
 3. 执行 `docker compose up --build` 启动
 4. 验证 `curl http://localhost:8000/health/ready` 返回 `{"status":"ok"}`
+
+## 界面总览
+
+前端界面截图和页面说明单独放在 `docs/ui-gallery.md`：
+
+- 首页：任务提交、状态机总览、事件流和决策包展示
+- 召回测试：召回基准测试、历史对比和结果评估
+- 异常样本管理：异常样本登记、筛选、处理和汇总
+- 记忆浏览器：记忆块检索、过滤、展开查看
+- 上下文监控：各节点 token 使用情况与上下文占比
+- 检查点时间线：工作流检查点、状态快照与回溯信息
+- Agent 增强：运行时增强能力展示
 
 ## 环境变量
 
