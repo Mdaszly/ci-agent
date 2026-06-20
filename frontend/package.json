@@ -1,0 +1,26 @@
+{
+  "name": "ci-agent-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "gen:api": "openapi-typescript http://localhost:8000/openapi.json -o src/services/openapi.d.ts"
+  },
+  "dependencies": {
+    "@vitejs/plugin-vue": "latest",
+    "echarts": "^6.1.0",
+    "element-plus": "latest",
+    "openapi-fetch": "^0.17.0",
+    "vite": "latest",
+    "vue": "latest",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.13.0",
+    "typescript": "latest",
+    "vue-tsc": "latest"
+  }
+}

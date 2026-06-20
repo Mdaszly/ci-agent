@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: ci-agent-backend
+Version: 0.1.0
+Summary: Evidence-first competitive intelligence agent backend
+Requires-Python: >=3.11
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.30.0
+Requires-Dist: pydantic>=2.8.0
+Requires-Dist: pydantic-settings>=2.5.0
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: python-multipart>=0.0.9
+Requires-Dist: langgraph>=0.2.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: beautifulsoup4>=4.12.0
+Requires-Dist: lxml>=4.9.0
+Requires-Dist: sqlalchemy>=2.0.0
+Requires-Dist: asyncpg>=0.29.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"

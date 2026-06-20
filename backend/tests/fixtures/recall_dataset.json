@@ -1,0 +1,307 @@
+{
+  "dataset_id": "recall_benchmark_v1",
+  "dataset_version": "v1.0.0",
+  "description": "竞品分析决策记忆召回率基准测试集",
+  "baseline_config": {
+    "top_k": 5,
+    "vector_weight": 0.7,
+    "lexical_weight": 0.3,
+    "fusion_strategy": "weighted",
+    "candidate_multiplier": 2,
+    "hnsw_ef_search": 40
+  },
+  "memory_items": [
+    {
+      "id": "mem_test_001",
+      "task_id": "task_test_001",
+      "pack_id": "decision_test_001",
+      "version": 1,
+      "chunk_type": "decision",
+      "stage": "writer",
+      "summary": "几素手持风扇定位为高性能旗舰款，风力强劲但噪音控制不足",
+      "embedding_text": "几素手持风扇 风力强劲 噪音略大 续航8小时 价格99元 高端定位 旗舰款",
+      "payload": { "competitor": "几素", "dimension": "feature" },
+      "source_refs": ["几素手持风扇产品页"],
+      "status": "approved"
+    },
+    {
+      "id": "mem_test_002",
+      "task_id": "task_test_001",
+      "pack_id": "decision_test_001",
+      "version": 1,
+      "chunk_type": "decision",
+      "stage": "writer",
+      "summary": "铁布衫手持风扇采用静音设计，风力适中，续航12小时",
+      "embedding_text": "铁布衫手持风扇 静音设计 风力适中 续航12小时 价格79元 性价比",
+      "payload": { "competitor": "铁布衫", "dimension": "feature" },
+      "source_refs": ["铁布衫手持风扇产品页"],
+      "status": "approved"
+    },
+    {
+      "id": "mem_test_003",
+      "task_id": "task_test_001",
+      "pack_id": "decision_test_001",
+      "version": 1,
+      "chunk_type": "evidence",
+      "stage": "research",
+      "summary": "几素风扇用户反馈续航缩水，实际使用仅6小时",
+      "embedding_text": "几素风扇 用户反馈 续航缩水 实际使用6小时 电池衰减 充电慢",
+      "payload": { "competitor": "几素", "dimension": "user_feedback" },
+      "source_refs": ["几素用户评论"],
+      "status": "approved"
+    },
+    {
+      "id": "mem_test_004",
+      "task_id": "task_test_001",
+      "pack_id": "decision_test_001",
+      "version": 1,
+      "chunk_type": "evidence",
+      "stage": "research",
+      "summary": "铁布衫风扇静音效果优秀，夜间使用不扰眠",
+      "embedding_text": "铁布衫风扇 静音效果 夜间使用 不扰眠 低噪音 安静 睡眠模式",
+      "payload": { "competitor": "铁布衫", "dimension": "user_feedback" },
+      "source_refs": ["铁布衫用户评论"],
+      "status": "approved"
+    },
+    {
+      "id": "mem_test_005",
+      "task_id": "task_test_002",
+      "pack_id": "decision_test_002",
+      "version": 1,
+      "chunk_type": "decision",
+      "stage": "writer",
+      "summary": "蓝牙耳机A品牌主打低延迟游戏模式，但佩戴舒适度一般",
+      "embedding_text": "蓝牙耳机 A品牌 低延迟 游戏模式 佩戴舒适度一般 价格199元 游戏定位",
+      "payload": { "competitor": "A品牌", "dimension": "feature" },
+      "source_refs": ["A品牌蓝牙耳机产品页"],
+      "status": "approved"
+    },
+    {
+      "id": "mem_test_006",
+      "task_id": "task_test_002",
+      "pack_id": "decision_test_002",
+      "version": 1,
+      "chunk_type": "decision",
+      "stage": "writer",
+      "summary": "蓝牙耳机B品牌主打长续航，单次充电可用30小时",
+      "embedding_text": "蓝牙耳机 B品牌 长续航 单次充电30小时 电池耐用 价格149元 通勤定位",
+      "payload": { "competitor": "B品牌", "dimension": "feature" },
+      "source_refs": ["B品牌蓝牙耳机产品页"],
+      "status": "approved"
+    },
+    {
+      "id": "mem_test_007",
+      "task_id": "task_test_001",
+      "pack_id": "decision_test_001",
+      "version": 2,
+      "chunk_type": "repair",
+      "stage": "repair",
+      "summary": "v2修复：补充了几素风扇的噪音分贝数据和竞品对比",
+      "embedding_text": "v2修复 几素风扇 噪音分贝 竞品对比 补充数据 65分贝 铁布衫45分贝",
+      "payload": { "repair_summary": "补充噪音数据" },
+      "source_refs": ["噪音测试报告"],
+      "status": "approved"
+    },
+    {
+      "id": "mem_test_008",
+      "task_id": "task_test_001",
+      "pack_id": "decision_test_001",
+      "version": 1,
+      "chunk_type": "reviewer_feedback",
+      "stage": "reviewer",
+      "summary": "复核评分0.82，引用精度良好但定价洞察不足",
+      "embedding_text": "复核评分0.82 引用精度良好 定价洞察不足 建议补充竞品价格区间分析",
+      "payload": { "review_score": 0.82 },
+      "source_refs": [],
+      "status": "approved"
+    },
+    {
+      "id": "mem_test_009",
+      "task_id": "task_test_002",
+      "pack_id": "decision_test_002",
+      "version": 1,
+      "chunk_type": "conflict",
+      "stage": "conflict_resolver",
+      "summary": "A品牌延迟数据冲突：官方标注40ms，实测65ms",
+      "embedding_text": "A品牌延迟数据冲突 官方标注40ms 实测65ms 延迟虚标 游戏模式失效",
+      "payload": { "conflict_id": "conflict_001" },
+      "source_refs": ["A品牌官方参数", "实测报告"],
+      "status": "approved"
+    },
+    {
+      "id": "mem_test_010",
+      "task_id": "task_test_001",
+      "pack_id": "decision_test_001",
+      "version": 1,
+      "chunk_type": "decision",
+      "stage": "writer",
+      "summary": "手持风扇市场定位建议：高端主打静音，中端主打续航",
+      "embedding_text": "手持风扇 市场定位建议 高端静音 中端续航 价格分层 99元高端 79元中端",
+      "payload": { "dimension": "positioning" },
+      "source_refs": ["市场分析报告"],
+      "status": "approved"
+    }
+  ],
+  "test_cases": [
+    {
+      "case_id": "tc_001",
+      "category": "semantic_synonym",
+      "bucket": "semantic_synonym",
+      "query": "这款风扇声音太响了，能用多久",
+      "expected_ids": ["mem_test_001"],
+      "description": "同义词测试：'声音太响'→'噪音略大'，'能用多久'→'续航8小时'"
+    },
+    {
+      "case_id": "tc_002",
+      "category": "semantic_synonym",
+      "bucket": "semantic_synonym",
+      "query": "晚上睡觉用会不会吵",
+      "expected_ids": ["mem_test_002", "mem_test_004"],
+      "description": "同义词测试：'晚上睡觉吵'→'静音/不扰眠'"
+    },
+    {
+      "case_id": "tc_003",
+      "category": "semantic_synonym",
+      "bucket": "semantic_synonym",
+      "query": "电池能用多长时间",
+      "expected_ids": ["mem_test_001", "mem_test_002", "mem_test_003"],
+      "description": "同义词测试：'电池能用多久'→'续航'"
+    },
+    {
+      "case_id": "tc_004",
+      "category": "semantic_paraphrase",
+      "bucket": "semantic_paraphrase",
+      "query": "这款产品的续航能力表现怎么样",
+      "expected_ids": ["mem_test_001", "mem_test_002", "mem_test_003"],
+      "description": "改写测试：整体句式改写"
+    },
+    {
+      "case_id": "tc_005",
+      "category": "semantic_paraphrase",
+      "bucket": "semantic_paraphrase",
+      "query": "噪音控制做得好不好",
+      "expected_ids": ["mem_test_001", "mem_test_002", "mem_test_004"],
+      "description": "改写测试：'噪音控制'相关"
+    },
+    {
+      "case_id": "tc_006",
+      "category": "exact_keyword",
+      "bucket": "exact_keyword",
+      "query": "几素 风力",
+      "expected_ids": ["mem_test_001"],
+      "description": "精确匹配：包含'几素'+'风力'"
+    },
+    {
+      "case_id": "tc_007",
+      "category": "exact_keyword",
+      "bucket": "exact_keyword",
+      "query": "铁布衫 续航 价格",
+      "expected_ids": ["mem_test_002"],
+      "description": "精确匹配：包含'铁布衫'+'续航'+'价格'"
+    },
+    {
+      "case_id": "tc_008",
+      "category": "exact_keyword",
+      "bucket": "exact_keyword",
+      "query": "蓝牙耳机 A品牌 低延迟",
+      "expected_ids": ["mem_test_005"],
+      "description": "精确匹配：包含'蓝牙耳机'+'A品牌'+'低延迟'"
+    },
+    {
+      "case_id": "tc_009",
+      "category": "mixed_query",
+      "bucket": "mixed_query",
+      "query": "铁布衫静音风扇价格",
+      "expected_ids": ["mem_test_002"],
+      "description": "混合查询：精确'铁布衫'+语义'静音'+精确'价格'"
+    },
+    {
+      "case_id": "tc_010",
+      "category": "mixed_query",
+      "bucket": "mixed_query",
+      "query": "几素风扇声音大续航短",
+      "expected_ids": ["mem_test_001", "mem_test_003"],
+      "description": "混合查询：精确'几素'+语义'声音大'+'续航短'"
+    },
+    {
+      "case_id": "tc_011",
+      "category": "cross_task",
+      "bucket": "cross_task",
+      "query": "蓝牙耳机续航",
+      "expected_ids": ["mem_test_006"],
+      "description": "跨任务召回：蓝牙耳机任务的续航记忆"
+    },
+    {
+      "case_id": "tc_012",
+      "category": "cross_task",
+      "bucket": "cross_task",
+      "query": "电池耐用性",
+      "expected_ids": ["mem_test_001", "mem_test_002", "mem_test_006"],
+      "description": "跨任务召回：电池相关记忆跨手持风扇和蓝牙耳机"
+    },
+    {
+      "case_id": "tc_013",
+      "category": "version_evolution",
+      "bucket": "version_evolution",
+      "query": "v2修复了什么",
+      "expected_ids": ["mem_test_007"],
+      "description": "版本演进：匹配 repair 类型记忆块"
+    },
+    {
+      "case_id": "tc_014",
+      "category": "version_evolution",
+      "bucket": "version_evolution",
+      "query": "修复补充了哪些数据",
+      "expected_ids": ["mem_test_007"],
+      "description": "版本演进：修复相关记忆"
+    },
+    {
+      "case_id": "tc_015",
+      "category": "negative_case",
+      "bucket": "negative_case",
+      "query": "今天北京天气怎么样",
+      "expected_ids": [],
+      "description": "负例测试：与竞品分析无关"
+    },
+    {
+      "case_id": "tc_016",
+      "category": "negative_case",
+      "bucket": "negative_case",
+      "query": "如何做红烧肉",
+      "expected_ids": [],
+      "description": "负例测试：烹饪相关，无关查询"
+    },
+    {
+      "case_id": "tc_017",
+      "category": "semantic_synonym",
+      "bucket": "semantic_synonym",
+      "query": "充电速度快不快",
+      "expected_ids": ["mem_test_003"],
+      "description": "同义词测试：'充电快不快'→'充电慢'"
+    },
+    {
+      "case_id": "tc_018",
+      "category": "semantic_paraphrase",
+      "bucket": "semantic_paraphrase",
+      "query": "这款产品的定价策略是什么",
+      "expected_ids": ["mem_test_001", "mem_test_002", "mem_test_010"],
+      "description": "改写测试：'定价策略'相关"
+    },
+    {
+      "case_id": "tc_019",
+      "category": "exact_keyword",
+      "bucket": "exact_keyword",
+      "query": "B品牌 30小时",
+      "expected_ids": ["mem_test_006"],
+      "description": "精确匹配：'B品牌'+'30小时'"
+    },
+    {
+      "case_id": "tc_020",
+      "category": "mixed_query",
+      "bucket": "mixed_query",
+      "query": "高端静音风扇定位建议",
+      "expected_ids": ["mem_test_010", "mem_test_002"],
+      "description": "混合查询：'高端'+'静音'+'定位建议'"
+    }
+  ]
+}
