@@ -567,6 +567,53 @@ TaskRecord
 | `performance`     | 产品力优势 | feature:0.35, user_feedback:0.25, pricing:0.20, positioning:0.10, risk:0.10 | feature, user_feedback          |
 | `custom`          | 自定义权重 | 用户自定义（自动归一化）                                                    | 权重 top3                       |
 
+#### 5.7.3 新增前端页面矩阵
+
+| 页面 | 路由 | 作用 |
+| --- | --- | --- |
+| `Login.vue` | `/login` | 登录与 Token 管理 |
+| `MainLayout.vue` | 全局布局 | 顶栏导航、用户区、路由承载 |
+| `TaskDetail.vue` | `/tasks/:id` | 任务详情、证据、决策包、记忆与复核 |
+| `RecallTest.vue` / `RecallTestDetail.vue` | `/recall`、`/recall/:testId` | 召回基准测试、历史对比、指标分析 |
+| `BadCaseManagement.vue` | `/bad-cases` | 异常样本管理与状态流转 |
+| `MemoryExplorer.vue` | `/memory` | 记忆块浏览、检索、排序、展开 |
+| `ContextMonitor.vue` | `/context` | token 使用量与上下文占比监控 |
+| `CheckpointTimeline.vue` | `/checkpoints` | 检查点时间线与调试回溯 |
+| `AgentEnhancements.vue` | `/agent-enhancements` | Checkpointer、LoopGuard、HITL、Streaming 等增强能力 |
+
+#### 5.7.4 运行时模块总览
+
+| 模块 | 作用 |
+| --- | --- |
+| `checkpointer.py` | 状态快照、断点续传、Time Travel |
+| `loop_guard.py` | 三层防御，阻断重复状态与死循环 |
+| `retry_policy.py` | 指数退避 + 抖动重试 |
+| `hitl.py` | 人工审批与中断恢复 |
+| `json_stable.py` | JSON 提取、解析与兜底校验 |
+| `context_compressor.py` | 上下文压缩与截断 |
+| `streaming.py` | values / updates / events 流式输出 |
+| `ragas_evaluator.py` | RAGAS 指标评估 |
+| `memory_store.py` | 分层记忆存储与命名空间隔离 |
+| `decision_memory.py` | 决策包切块、写入、召回、归档 |
+
+#### 5.7.5 页面与运行时的连接关系
+
+| 页面 | 直接依赖的运行时能力 | 主要观测对象 |
+| --- | --- | --- |
+| `App.vue` | `streaming.py`、`checkpointer.py`、`loop_guard.py` | 任务进度、事件轨迹、终止状态 |
+| `TaskDetail.vue` | `decision_memory.py`、`checkpointer.py` | 版本、证据、回流历史 |
+| `RecallTest.vue` / `RecallTestDetail.vue` | `memory_store.py`、`ragas_evaluator.py` | 召回命中、命中率、对比记录 |
+| `MemoryExplorer.vue` | `memory_store.py`、`decision_memory.py` | 记忆块、命名空间、切块内容 |
+| `ContextMonitor.vue` | `context_compressor.py`、`json_stable.py` | token 占比、截断位置、压缩结果 |
+| `CheckpointTimeline.vue` | `checkpointer.py` | checkpoint 序列、回放点、恢复点 |
+| `AgentEnhancements.vue` | `checkpointer.py`、`loop_guard.py`、`retry_policy.py`、`hitl.py` | 增强能力开关、调试状态、容错路径 |
+| `BadCaseManagement.vue` | `decision_memory.py`、`memory_store.py` | 异常样本、复盘标签、处置状态 |
+| `RecallAudit.vue` | `memory_store.py`、`ragas_evaluator.py` | 审核记录、召回质量、问题归档 |
+
+#### 5.7.6 页面截图入口
+
+界面截图和简要说明已单独整理到 `docs/ui-gallery.md`，用于承载首页、召回测试、异常样本管理、记忆浏览、上下文监控、检查点时间线和 Agent 增强页面的图文说明。
+
 ---
 
 ## 6. 多 Agent 项目流程
